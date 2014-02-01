@@ -1,7 +1,14 @@
-if (!org.bustany.TrackerBird.MailStore || !org.bustany.TrackerBird.MailStore.__initialized)
+if (!org.bustany.TrackerBird.MailStore || !org.bustany.TrackerBird.MailStore.__initialized) {
+
+Components.utils.import("resource:///modules/MailUtils.js");
+
 org.bustany.TrackerBird.MailStore = {
 	// Init barrier
 	__initialized: true,
+	__console: Components.classes["@mozilla.org/consoleservice;1"].getService(Components.interfaces.nsIConsoleService),
+	_log: function(msg) {
+	   this.__console.logStringMessage(msg);
+	},
 
 	_trackerStore: org.bustany.TrackerBird.TrackerStore,
 	_persistentStore: org.bustany.TrackerBird.PersistentStore,
@@ -79,25 +86,23 @@ org.bustany.TrackerBird.MailStore = {
 		this._indexMessageCallback = function(msg) { store.indexMessage(msg); }
 		this._removeMessageCallback = function(msg) { store.removeMessage(msg); }
 
+        MailUtils.discoverFolders();
+        this._log("trackerbird: mailstore initialized");
 		return true;
 	},
 
 	listAllFolders: function() {
-		var accountManager = Components.classes["@mozilla.org/messenger/account-manager;1"].
-		                     getService(Components.interfaces.nsIMsgAccountManager);
+		var servers = MailServices.accounts.allServers;
 
-		var servers = accountManager.allServers;
+		for (var i = 0; i < servers.length; i++) {
+			var s = servers.queryElementAt(i, Components.interfaces.nsIMsgIncomingServer);
 
-		for (var i = 0; i < servers.Count(); i++) {
-			var s = servers.QueryElementAt(i, Components.interfaces.nsIMsgIncomingServer);
+			var folders = Components.classes["@mozilla.org/array;1"].
+			              createInstance(Components.interfaces.nsIMutableArray);
+   			s.rootFolder.ListDescendants(folders);
 
-			var folders = Components.classes["@mozilla.org/supports-array;1"].
-			              createInstance(Components.interfaces.nsISupportsArray);
-
-			s.rootFolder.ListDescendents(folders);
-
-			for (var j = 0; j < folders.Count(); j++) {
-				var folder = folders.GetElementAt(j).QueryInterface(Components.interfaces.nsIMsgFolder);
+			for (var j = 0; j < folders.length; j++) {
+				var folder = folders.queryElementAt(j, Components.interfaces.nsIMsgFolder);
 
 				var store = this;
 				this._queue.add({
@@ -195,4 +200,5 @@ org.bustany.TrackerBird.MailStore = {
 
 		mailSession.Remove(this._folderListener);
 	}
+}
 }
