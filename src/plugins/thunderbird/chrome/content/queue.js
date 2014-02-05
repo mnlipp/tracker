@@ -1,11 +1,17 @@
 org.bustany.TrackerBird.Queue = function(delay) {
-	this._delay = 100;
+	this._delay = delay;
 	this._items = [];
 	this._active = false;
 
 	var queue = this;
-	this._timerEvent = { notify: function(timer) { queue._active = false; queue.process(); } };
+	this._timerEvent = { notify: function(timer) { queue.process(); } };
 	this._queueTimer = null;
+}
+
+org.bustany.TrackerBird.Queue.prototype.__console = Components.classes["@mozilla.org/consoleservice;1"].getService(Components.interfaces.nsIConsoleService);
+
+org.bustany.TrackerBird.Queue.prototype._log = function(msg) {
+   this.__console.logStringMessage(msg);
 }
 
 org.bustany.TrackerBird.Queue.prototype.add = function(item) {
@@ -30,8 +36,16 @@ org.bustany.TrackerBird.Queue.prototype.process = function() {
 	this._active = true;
 
 	var item = this._items.shift();
+	dump ("Trackbird executing " + item.callback + " (" + this._items.length + " items remaining\n");
 
-	item.callback(item.data);
+	try {
+		item.callback(item.data);		
+	} catch (ex) {
+		dump ("Trackbird could not execute: " + ex + "\n");
+		this._log("Trackerbird could not execute: " + ex);
+	}
+
+	this._active = false;
 
 	this._queueTimer = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
 	this._queueTimer.initWithCallback(this._timerEvent, this._delay, Components.interfaces.nsITimer.TYPE_ONE_SHOT);
