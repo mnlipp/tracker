@@ -12,11 +12,10 @@ org.bustany.TrackerBird.MailStore = {
 
 	_trackerStore: org.bustany.TrackerBird.TrackerStore,
 	_persistentStore: org.bustany.TrackerBird.PersistentStore,
-	_ui: org.bustany.TrackerBird.Ui,
 
 	_folderListener: {
 		OnItemAdded: function(parentItem, item) {
-			dump("Item added\n");
+			dump("Trackerbird: tracked item added\n");
 			var store = org.bustany.TrackerBird.MailStore;
 			var hdr = item.QueryInterface(Components.interfaces.nsIMsgDBHdr);
 
@@ -27,7 +26,7 @@ org.bustany.TrackerBird.MailStore = {
 		},
 
 		OnItemRemoved: function(parentItem, item) {
-			dump("Item removed\n");
+			dump("Trackerbird: tracked item removed\n");
 			var store = org.bustany.TrackerBird.MailStore;
 			var hdr = item.QueryInterface(Components.interfaces.nsIMsgDBHdr);
 
@@ -38,27 +37,21 @@ org.bustany.TrackerBird.MailStore = {
 		},
 
 		OnItemPropertyChanged: function(item, property, oldValue, newValue) {
-			dump("Item property changed\n");
 		},
 
 		OnItemIntPropertyChanged: function(item, property, oldValue, newValue) {
-			dump("Item property changed\n");
 		},
 
 		OnItemBoolPropertyChanged: function(item, property, oldValue, newValue) {
-			dump("Item property changed\n");
 		},
 
 		OnItemUnicharPropertyChanged: function(item, property, oldValue, newValue) {
-			dump("Item property changed\n");
 		},
 
 		OnItemPropertyFlagChanged: function(header, property, oldValue, newValue) {
-			dump("Item flag changed\n");
 		},
 
 		OnItemEvent: function(folder, event) {
-			dump("Item event " + event + " " + folder + "\n");
 		}
 	},
 
@@ -108,11 +101,19 @@ org.bustany.TrackerBird.MailStore = {
 
 				var store = this;
 				this._queue.add({
-				                 callback: this._walkFolderCallback,
-				                 data: folder
-				                });
+					callback: store._walkFolderCallback,
+					data: folder
+				});
 			}
 		}
+		var store = this;
+		this._queue.add({
+			callback: function() {
+				dump("Trackerbird walked all folders\n");
+				store._log("trackerbird: walked all folders");
+			},
+			data: null
+		})
 	},
 
 	walkFolder: function(folder) {
@@ -152,8 +153,6 @@ org.bustany.TrackerBird.MailStore = {
 		if (this._trackerStore.storeMessage(msg, msgContents)) {
 			this._persistentStore.rememberMessage(msg);
 		}
-
-		this._ui.showMessage(this._queue.size() + " items remaining");
 	},
 
 	removeMessage: function(msg) {
@@ -197,10 +196,12 @@ org.bustany.TrackerBird.MailStore = {
 	},
 
 	shutdown: function() {
+		dump ("Trackerbird mailstore store shutting down...\n")
 		var mailSession = Components.classes["@mozilla.org/messenger/services/session;1"].
 		                  getService(Components.interfaces.nsIMsgMailSession);
 
 		mailSession.Remove(this._folderListener);
+		dump ("Trackerbird mailstore store shut down\n")
 	}
 }
 }
