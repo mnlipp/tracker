@@ -70,6 +70,7 @@ org.bustany.TrackerBird.MailStore = {
 	_prefs: null,
 
 	init: function() {
+		dump ("Trackerbird initializing mailstore...\n")
 		// To get notifications
 		var mailSession = Components.classes["@mozilla.org/messenger/services/session;1"].
 		                  getService(Components.interfaces.nsIMsgMailSession);
@@ -87,6 +88,7 @@ org.bustany.TrackerBird.MailStore = {
 		this._removeMessageCallback = function(msg) { store.removeMessage(msg); }
 
         MailUtils.discoverFolders();
+		dump ("Trackerbird mailstore initialized...\n")
         this._log("trackerbird: mailstore initialized");
 		return true;
 	},
