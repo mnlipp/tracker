@@ -118,9 +118,9 @@ org.bustany.TrackerBird.MailStore = {
 		}
 		this._removeMessageCallback = function(msg) { store.removeMessage(msg); }
 
-        MailUtils.discoverFolders();
+		MailUtils.discoverFolders();
 		dump ("Trackerbird mailstore initialized...\n")
-        this._log("trackerbird: mailstore initialized");
+		this._log("trackerbird: mailstore initialized");
 		return true;
 	},
 
