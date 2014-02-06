@@ -24,6 +24,7 @@
 #include <libtracker-miner/tracker-storage.h>
 
 #include "tracker-decorator-fs.h"
+#include "tracker-decorator-internal.h"
 
 #define TRACKER_DECORATOR_FS_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), TRACKER_TYPE_DECORATOR_FS, TrackerDecoratorFSPrivate))
 
@@ -75,21 +76,6 @@ tracker_decorator_fs_class_init (TrackerDecoratorFSClass *klass)
 	g_type_class_add_private (object_class, sizeof (TrackerDecoratorFSPrivate));
 }
 
-static GArray *
-cursor_to_array (TrackerSparqlCursor *cursor)
-{
-	GArray *ids;
-
-	ids = g_array_new (FALSE, FALSE, sizeof (gint));
-
-	while (tracker_sparql_cursor_next (cursor, NULL, NULL)) {
-		gint id = tracker_sparql_cursor_get_integer (cursor, 0);
-		g_array_append_val (ids, id);
-	}
-
-	return ids;
-}
-
 static void
 process_files_cb (GObject      *object,
                   GAsyncResult *result,
@@ -98,7 +84,6 @@ process_files_cb (GObject      *object,
 	TrackerSparqlConnection *conn;
 	TrackerSparqlCursor *cursor;
 	GError *error = NULL;
-	GArray *ids;
 
 	conn = TRACKER_SPARQL_CONNECTION (object);
 	cursor = tracker_sparql_connection_query_finish (conn, result, &error);
@@ -109,13 +94,12 @@ process_files_cb (GObject      *object,
 		return;
 	}
 
-	ids = cursor_to_array (cursor);
+	while (tracker_sparql_cursor_next (cursor, NULL, NULL)) {
+		gint id = tracker_sparql_cursor_get_integer (cursor, 0);
+		tracker_decorator_prepend_id (TRACKER_DECORATOR (user_data), id);
+	}
 
-	if (ids->len > 0)
-		tracker_decorator_prepend_ids (TRACKER_DECORATOR (user_data),
-		                               (gint *) ids->data, ids->len);
 	g_object_unref (cursor);
-	g_array_unref (ids);
 }
 
 static void
@@ -126,7 +110,6 @@ remove_files_cb (GObject *object,
 	TrackerSparqlConnection *conn;
 	TrackerSparqlCursor *cursor;
 	GError *error = NULL;
-	GArray *ids;
 
 	conn = TRACKER_SPARQL_CONNECTION (object);
 	cursor = tracker_sparql_connection_query_finish (conn, result, &error);
@@ -137,39 +120,12 @@ remove_files_cb (GObject *object,
 		return;
 	}
 
-	ids = cursor_to_array (cursor);
-
-	if (ids->len > 0)
-		tracker_decorator_delete_ids (TRACKER_DECORATOR (user_data),
-		                              (gint *) ids->data, ids->len);
-	g_object_unref (cursor);
-	g_array_unref (ids);
-}
-
-static void
-query_append_rdf_type_filter (GString          *query,
-                              TrackerDecorator *decorator)
-{
-	const gchar **class_names;
-	gint i = 0;
-
-	class_names = tracker_decorator_get_class_names (decorator);
-
-	if (!class_names || !*class_names)
-		return;
-
-	g_string_append (query, "&& (");
-
-	while (class_names[i]) {
-		if (i != 0)
-			g_string_append (query, "||");
-
-		g_string_append_printf (query, "EXISTS { ?urn a %s }",
-		                        class_names[i]);
-		i++;
+	while (tracker_sparql_cursor_next (cursor, NULL, NULL)) {
+		gint id = tracker_sparql_cursor_get_integer (cursor, 0);
+		tracker_decorator_delete_id (TRACKER_DECORATOR (user_data), id);
 	}
 
-	g_string_append (query, ") ");
+	g_object_unref (cursor);
 }
 
 static void
@@ -196,7 +152,7 @@ check_files (TrackerDecorator    *decorator,
 	                        "FILTER (! EXISTS { ?urn nie:dataSource <%s> } ",
 	                        data_source);
 
-	query_append_rdf_type_filter (query, decorator);
+	_tracker_decorator_query_append_rdf_type_filter (decorator, query);
 
 	if (available)
 		g_string_append (query, "&& BOUND(tracker:available(?urn))");

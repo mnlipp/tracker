@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008, Nokia <ivan.frade@nokia.com>
+ * Copyright (C) 2014 Carlos Garnacho  <carlosg@gnome.org>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,35 +15,18 @@
  * License along with this library; if not, write to the
  * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
  * Boston, MA  02110-1301, USA.
- *
- * Authors:
- * Philip Van Hoof <philip@codeminded.be>
  */
 
-#include "tracker-media-art-generic.h"
+#ifndef __LIBTRACKER_MINER_DECORATOR_INTERNAL_H__
+#define __LIBTRACKER_MINER_DECORATOR_INTERNAL_H__
 
-void
-tracker_media_art_plugin_init (void)
-{
-}
+#include "tracker-decorator.h"
 
-void
-tracker_media_art_plugin_shutdown (void)
-{
-}
+G_BEGIN_DECLS
 
-gboolean
-tracker_media_art_file_to_jpeg (const gchar *filename,
-                                const gchar *target)
-{
-	return FALSE;
-}
+void _tracker_decorator_query_append_rdf_type_filter (TrackerDecorator *decorator,
+                                                      GString          *query);
 
-gboolean
-tracker_media_art_buffer_to_jpeg (const unsigned char *buffer,
-                                  size_t               len,
-                                  const gchar         *buffer_mime,
-                                  const gchar         *target)
-{
-	return FALSE;
-}
+G_END_DECLS
+
+#endif /* __LIBTRACKER_MINER_DECORATOR_INTERNAL_H__ */
