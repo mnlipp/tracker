@@ -11,8 +11,7 @@ org.bustany.TrackerBird.Queue = function(delay) {
 
 	var queue = this;
 	this._timerEvent = { notify: function(timer) { queue._active = false; queue.process(); } };
-	this._queueTimer = null;
-	dump(this._ui);
+	this._queueTimer = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
 	dump("Trackerbird created queue with delay " + delay + "\n");
 }
 
@@ -27,20 +26,19 @@ org.bustany.TrackerBird.Queue.prototype.addImmediate = function(item) {
 }
 
 org.bustany.TrackerBird.Queue.prototype.process = function() {
+	if (this._items.length == 0) {
+		this._ui.showMessage("Indexer idle");
+		return;
+	}
+	this._ui.showMessage(this._items.length + " actions remaining");
+
 	if (this._active) {
 		return;
 	}
-
-	if (this._items.length == 0) {
-		this._ui.showMessage("Idle");
-		return;
-	}
-	this._ui.showMessage(this._items.length + " items remaining");
-
 	this._active = true;
 
 	var item = this._items.shift();
-	dump ("Trackbird executing " + item.callback + " (" + this._items.length + " items remaining\n");
+	// dump ("Trackbird executing " + item.callback + " (" + this._items.length + " items remaining\n");
 
 	try {
 		item.callback(item.data);		
@@ -49,7 +47,6 @@ org.bustany.TrackerBird.Queue.prototype.process = function() {
 		this._log("Trackerbird could not execute: " + ex);
 	}
 
-	this._queueTimer = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
 	this._queueTimer.initWithCallback(this._timerEvent, this._delay, Components.interfaces.nsITimer.TYPE_ONE_SHOT);
 }
 
