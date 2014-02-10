@@ -13,9 +13,9 @@ org.bustany.TrackerBird.ContentRetriever.prototype = {
 	},
 
 	onDataAvailable: function(request, context, inputStream, offset, count) {
-	    var scriptableInputStream = 
-	    	Components.classes["@mozilla.org/scriptableinputstream;1"].
-	    		createInstance(Components.interfaces.nsIScriptableInputStream);
+	    var scriptableInputStream =
+			Components.classes["@mozilla.org/scriptableinputstream;1"].
+				createInstance(Components.interfaces.nsIScriptableInputStream);
 	    scriptableInputStream.init(inputStream);
 	    var data = scriptableInputStream.read(count);
 	    this._contents += data;
@@ -26,7 +26,7 @@ org.bustany.TrackerBird.ContentRetriever.prototype = {
 		this._contents = this._contents.replace(/<[^>]+?>/g, "");
 		this._callback(this._header, this._contents);
 	},
-	
+
 	QueryInterface: function (aIID) {
 		if (aIID.equals(Components.interfaces.nsIStreamListener) ||
 			aIID.equals(Components.interfaces.nsISupports)) {
@@ -35,7 +35,7 @@ org.bustany.TrackerBird.ContentRetriever.prototype = {
 		throw Components.results.NS_NOINTERFACE;
 	}
 }
-	
+
 org.bustany.TrackerBird.MailStore = {
 	// Init barrier
 	__initialized: true,
@@ -125,6 +125,7 @@ org.bustany.TrackerBird.MailStore = {
 	},
 
 	listAllFolders: function() {
+		var store = this;
 		var servers = MailServices.accounts.allServers;
 
 		for (var i = 0; i < servers.length; i++) {
@@ -132,19 +133,18 @@ org.bustany.TrackerBird.MailStore = {
 
 			var folders = Components.classes["@mozilla.org/array;1"].
 			              createInstance(Components.interfaces.nsIMutableArray);
-   			s.rootFolder.ListDescendants(folders);
+			s.rootFolder.ListDescendants(folders);
 
 			for (var j = 0; j < folders.length; j++) {
 				var folder = folders.queryElementAt(j, Components.interfaces.nsIMsgFolder);
 
-				var store = this;
 				this._queue.add({
 					callback: store._walkFolderCallback,
 					data: folder
 				});
 			}
 		}
-		var store = this;
+
 		this._queue.add({
 			callback: function() {
 				dump("Trackerbird walked all folders\n");
@@ -203,8 +203,7 @@ org.bustany.TrackerBird.MailStore = {
 		// Streaming data into a nsScriptableInputStream and then reading from it here
 		// makes thunderbird hang sometimes, so continue asynchronously.
 		try {
-			var msgStream = new org.bustany.TrackerBird
-				.ContentRetriever(header, this._indexMessageContentsCallback);
+			var msgStream = new org.bustany.TrackerBird.ContentRetriever(header, this._indexMessageContentsCallback);
 			msgService.streamMessage(uri, msgStream, null, null, true, null);
 		} catch (ex) {
 			dump("Trackerbird could not get contents of message " + ex + "\n");

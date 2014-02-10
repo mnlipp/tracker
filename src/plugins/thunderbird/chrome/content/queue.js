@@ -38,10 +38,9 @@ org.bustany.TrackerBird.Queue.prototype.process = function() {
 	this._active = true;
 
 	var item = this._items.shift();
-	// dump ("Trackbird executing " + item.callback + " (" + this._items.length + " items remaining\n");
 
 	try {
-		item.callback(item.data);		
+		item.callback(item.data);
 	} catch (ex) {
 		dump ("Trackbird could not execute: " + ex + "\n");
 		this._log("Trackerbird could not execute: " + ex);
