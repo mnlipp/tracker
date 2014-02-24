@@ -10,16 +10,14 @@ include $(top_srcdir)/Makefile.decl
 #
 include $(top_srcdir)/src/libtracker-miner/Makefile-shared-sources.decl
 
-noinst_LTLIBRARIES = libtracker-miner-tests.la
+noinst_LTLIBRARIES += libtracker-miner-tests.la
 
-noinst_PROGRAMS = $(TEST_PROGS)
+noinst_PROGRAMS += $(test_programs)
 
-TEST_PROGS +=                                          \
+test_programs = \
 	tracker-crawler-test                           \
 	tracker-file-notifier-test		       \
 	tracker-file-system-test		       \
-	tracker-miner-manager-test                     \
-	tracker-password-provider-test                 \
 	tracker-thumbnailer-test                       \
 	tracker-monitor-test			       \
 	tracker-priority-queue-test		       \
@@ -65,23 +63,9 @@ libtracker_miner_tests_la_LIBADD = 		       \
 	$(BUILD_LIBS)
 
 tracker_crawler_test_SOURCES = \
+	$(libtracker_miner_crawler_sources) \
+	$(libtracker_miner_crawler_headers) \
 	tracker-crawler-test.c
-
-tracker_miner_manager_test_SOURCES = \
-	tracker-miner-manager-test.c \
-	miners-mock.c \
-	empty-gobject.c
-
-tracker_miner_manager_test_LDADD = \
-	libtracker-miner-tests.la \
-	$(LDADD)
-
-tracker_password_provider_test_SOURCES = \
-	tracker-password-provider-test.c
-
-tracker_password_provider_test_LDADD = \
-	libtracker-miner-tests.la \
-	$(LDADD)
 
 tracker_thumbnailer_test_SOURCES = \
 	tracker-thumbnailer-test.c \
@@ -108,7 +92,8 @@ tracker_indexing_tree_test_SOURCES = \
 tracker_file_system_test_SOURCES = \
 	tracker-file-system-test.c
 
-tracker_file_notifier_test_SOURCES = \
+tracker_file_notifier_test_SOURCES =                   \
+	$(libtracker_miner_monitor_sources)            \
 	tracker-file-notifier-test.c
 
 noinst_HEADERS =                                       \
@@ -118,12 +103,12 @@ noinst_HEADERS =                                       \
 	miners-mock.h                                  \
 	empty-gobject.h
 
-BUILT_SOURCES = \
+BUILT_SOURCES += \
 	$(libtracker_miner_file_system_sources) \
 	$(libtracker_miner_file_system_headers) \
 	libtracker_miner_tests_la_vala.stamp
 
-EXTRA_DIST = \
+EXTRA_DIST += \
 	data/empty-dir/.hidden \
 	data/file1 \
 	data/dir/empty-dir/.hidden \

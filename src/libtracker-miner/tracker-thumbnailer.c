@@ -27,7 +27,6 @@
 
 /**
  * SECTION:tracker-thumbnailer
- * @title: Thumbnailer management
  * @short_description: Request the thumbnailer service creates or
  * updates thumbnails.
  * @include: libtracker-miner/tracker-miner.h
@@ -63,15 +62,21 @@ typedef struct {
 	gboolean service_is_available;
 } TrackerThumbnailerPrivate;
 
-static void private_free (gpointer data);
-static GPrivate private_key = G_PRIVATE_INIT (private_free);
+static void tracker_thumbnailer_initable_iface_init (GInitableIface *iface);
+
+G_DEFINE_TYPE_WITH_CODE (TrackerThumbnailer, tracker_thumbnailer, G_TYPE_OBJECT,
+			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
+						tracker_thumbnailer_initable_iface_init)
+			 G_ADD_PRIVATE (TrackerThumbnailer))
 
 static void
-private_free (gpointer data)
+tracker_thumbnailer_finalize (GObject *object)
 {
 	TrackerThumbnailerPrivate *private;
+	TrackerThumbnailer *thumbnailer;
 
-	private = data;
+	thumbnailer = TRACKER_THUMBNAILER (object);
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (private->cache_proxy) {
 		g_object_unref (private->cache_proxy);
@@ -96,7 +101,7 @@ private_free (gpointer data)
 	g_slist_foreach (private->moves_from, (GFunc) g_free, NULL);
 	g_slist_free (private->moves_from);
 
-	g_free (private);
+	G_OBJECT_CLASS (tracker_thumbnailer_parent_class)->finalize (object);
 }
 
 inline static gboolean
@@ -121,42 +126,28 @@ should_be_thumbnailed (GStrv        list,
 	return should_thumbnail;
 }
 
-/**
- * tracker_thumbnailer_init:
- *
- * Initializes the thumbnailer connection.
- *
- * Returns: #TRUE if connection was successfully initialized, #FALSE otherwise.
- *
- * Since: 0.8
- */
-gboolean
-tracker_thumbnailer_init (void)
+static gboolean
+tracker_thumbnailer_initable_init (GInitable     *initable,
+				   GCancellable  *cancellable,
+				   GError       **error)
 {
 	TrackerThumbnailerPrivate *private;
-	GError *error = NULL;
+	TrackerThumbnailer *thumbnailer;
 	GVariant *v;
 
-	private = g_new0 (TrackerThumbnailerPrivate, 1);
+	thumbnailer = TRACKER_THUMBNAILER (initable);
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	/* Don't start at 0, start at 1. */
 	private->request_id = 1;
-
-	g_private_replace (&private_key, private);
+	private->service_is_available = FALSE;
 
 	g_message ("Thumbnailer connections being set up...");
 
-	private->connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &error);
+	private->connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, error);
 
-	if (!private->connection) {
-		g_critical ("Could not connect to the D-Bus session bus, %s",
-		            error ? error->message : "no error given.");
-		g_clear_error (&error);
-
-		private->service_is_available = FALSE;
-
+	if (!private->connection)
 		return FALSE;
-	}
 
 	private->cache_proxy = g_dbus_proxy_new_sync (private->connection,
 	                                              G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
@@ -165,10 +156,10 @@ tracker_thumbnailer_init (void)
 	                                              THUMBCACHE_PATH,
 	                                              THUMBCACHE_INTERFACE,
 	                                              NULL,
-	                                              &error);
-
-	if (error) {
-		goto error_handler;
+	                                              error);
+	if (!private->cache_proxy) {
+		g_clear_object (&private->connection);
+		return FALSE;
 	}
 
 	private->manager_proxy = g_dbus_proxy_new_sync (private->connection,
@@ -178,10 +169,12 @@ tracker_thumbnailer_init (void)
 	                                                THUMBMAN_PATH,
 	                                                THUMBMAN_INTERFACE,
 	                                                NULL,
-	                                                &error);
+	                                                error);
 
-	if (error) {
-		goto error_handler;
+	if (!private->manager_proxy) {
+		g_clear_object (&private->connection);
+		g_clear_object (&private->cache_proxy);
+		return FALSE;
 	}
 
 	v = g_dbus_proxy_call_sync (private->manager_proxy,
@@ -190,28 +183,14 @@ tracker_thumbnailer_init (void)
 	                            G_DBUS_CALL_FLAGS_NONE,
 	                            -1,
 	                            NULL,
-	                            &error);
+	                            error);
 
-error_handler:
-
-	if (error) {
-		g_message ("Thumbnailer service did not return supported mime types, %s",
-		           error->message);
-
-		g_error_free (error);
-
-		if (private->cache_proxy) {
-			g_object_unref (private->cache_proxy);
-			private->cache_proxy = NULL;
-		}
-
-		if (private->manager_proxy) {
-			g_object_unref (private->manager_proxy);
-			private->manager_proxy = NULL;
-		}
-
+	if (!v) {
+		g_clear_object (&private->connection);
+		g_clear_object (&private->cache_proxy);
+		g_clear_object (&private->manager_proxy);
 		return FALSE;
-	} else if (v) {
+	} else {
 		GStrv mime_types = NULL;
 		GStrv uri_schemes = NULL;
 
@@ -258,21 +237,34 @@ error_handler:
 	return TRUE;
 }
 
-/**
- * tracker_thumbnailer_shutdown:
- *
- * Shuts down the thumbnailer connection.
- *
- * Since: 0.8
- */
-void
-tracker_thumbnailer_shutdown (void)
+static void
+tracker_thumbnailer_initable_iface_init (GInitableIface *iface)
 {
-	g_private_replace (&private_key, NULL);
+	iface->init = tracker_thumbnailer_initable_init;
+}
+
+static void
+tracker_thumbnailer_class_init (TrackerThumbnailerClass *klass)
+{
+	GObjectClass *object_class = G_OBJECT_CLASS (klass);
+
+	object_class->finalize = tracker_thumbnailer_finalize;
+}
+
+static void
+tracker_thumbnailer_init (TrackerThumbnailer *thumbnailer)
+{
+}
+
+TrackerThumbnailer *
+tracker_thumbnailer_new (void)
+{
+	return g_initable_new (TRACKER_TYPE_THUMBNAILER, NULL, NULL, NULL);
 }
 
 /**
  * tracker_thumbnailer_move_add:
+ * @thumbnailer: Thumbnailer object
  * @from_uri: URI of the file before the move
  * @mime_type: mime-type of the file
  * @to_uri: URI of the file after the move
@@ -285,20 +277,19 @@ tracker_thumbnailer_shutdown (void)
  * Since: 0.8
  */
 gboolean
-tracker_thumbnailer_move_add (const gchar *from_uri,
-                              const gchar *mime_type,
-                              const gchar *to_uri)
+tracker_thumbnailer_move_add (TrackerThumbnailer *thumbnailer,
+			      const gchar        *from_uri,
+                              const gchar        *mime_type,
+                              const gchar        *to_uri)
 {
-
 	TrackerThumbnailerPrivate *private;
 
 	/* mime_type can be NULL */
-
+	g_return_val_if_fail (TRACKER_IS_THUMBNAILER (thumbnailer), FALSE);
 	g_return_val_if_fail (from_uri != NULL, FALSE);
 	g_return_val_if_fail (to_uri != NULL, FALSE);
 
-	private = g_private_get (&private_key);
-	g_return_val_if_fail (private != NULL, FALSE);
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
 		return FALSE;
@@ -320,6 +311,7 @@ tracker_thumbnailer_move_add (const gchar *from_uri,
 
 /**
  * tracker_thumbnailer_remove_add:
+ * @thumbnailer: Thumbnailer object
  * @uri: URI of the file
  * @mime_type: mime-type of the file
  *
@@ -331,17 +323,17 @@ tracker_thumbnailer_move_add (const gchar *from_uri,
  * Since: 0.8
  */
 gboolean
-tracker_thumbnailer_remove_add (const gchar *uri,
-                                const gchar *mime_type)
+tracker_thumbnailer_remove_add (TrackerThumbnailer *thumbnailer,
+				const gchar        *uri,
+                                const gchar        *mime_type)
 {
 	TrackerThumbnailerPrivate *private;
 
+	g_return_val_if_fail (TRACKER_IS_THUMBNAILER (thumbnailer), FALSE);
 	/* mime_type can be NULL */
-
 	g_return_val_if_fail (uri != NULL, FALSE);
 
-	private = g_private_get (&private_key);
-	g_return_val_if_fail (private != NULL, FALSE);
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
 		return FALSE;
@@ -360,6 +352,7 @@ tracker_thumbnailer_remove_add (const gchar *uri,
 
 /**
  * tracker_thumbnailer_cleanup:
+ * @thumbnailer: Thumbnailer object
  * @uri_prefix: URI prefix
  *
  * Tells thumbnailer to cleanup all thumbnails under @uri_prefix.
@@ -369,14 +362,15 @@ tracker_thumbnailer_remove_add (const gchar *uri,
  * Since: 0.8
  */
 gboolean
-tracker_thumbnailer_cleanup (const gchar *uri_prefix)
+tracker_thumbnailer_cleanup (TrackerThumbnailer *thumbnailer,
+			     const gchar        *uri_prefix)
 {
 	TrackerThumbnailerPrivate *private;
 
+	g_return_val_if_fail (TRACKER_IS_THUMBNAILER (thumbnailer), FALSE);
 	g_return_val_if_fail (uri_prefix != NULL, FALSE);
 
-	private = g_private_get (&private_key);
-	g_return_val_if_fail (private != NULL, FALSE);
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
 		return FALSE;
@@ -402,19 +396,21 @@ tracker_thumbnailer_cleanup (const gchar *uri_prefix)
 
 /**
  * tracker_thumbnailer_send:
+ * @thumbnailer: Thumbnailer object
  *
  * Sends to the thumbnailer all stored requests.
  *
  * Since: 0.8
  */
 void
-tracker_thumbnailer_send (void)
+tracker_thumbnailer_send (TrackerThumbnailer *thumbnailer)
 {
 	TrackerThumbnailerPrivate *private;
 	guint list_len;
 
-	private = g_private_get (&private_key);
-	g_return_if_fail (private != NULL);
+	g_return_if_fail (TRACKER_IS_THUMBNAILER (thumbnailer));
+
+	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
 		return;

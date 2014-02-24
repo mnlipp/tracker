@@ -1,5 +1,3 @@
-include $(top_srcdir)/Makefile.decl
-
 AUTOMAKE_OPTIONS = 1.6
 
 # The name of the module.
@@ -51,7 +49,10 @@ expand_content_files =
 HTML_IMAGES =
 
 # Extra options to supply to gtkdoc-fixref
-FIXXREF_OPTIONS =
+FIXXREF_OPTIONS = \
+        --extra-dir=$(GLIB_PREFIX)/share/gtk-doc/html/gobject \
+        --extra-dir=$(GLIB_PREFIX)/share/gtk-doc/html/glib \
+        --extra-dir=$(GLIB_PREFIX)/share/gtk-doc/html/gio
 
 include $(top_srcdir)/gtk-doc.make
 

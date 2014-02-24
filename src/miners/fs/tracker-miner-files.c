@@ -39,6 +39,7 @@
 #include <libtracker-common/tracker-type-utils.h>
 #include <libtracker-common/tracker-utils.h>
 #include <libtracker-common/tracker-file-utils.h>
+#include <libtracker-common/tracker-storage.h>
 
 #include <libtracker-data/tracker-db-manager.h>
 
@@ -2764,7 +2765,8 @@ miner_files_add_removable_or_optical_directory (TrackerMinerFiles *mf,
 	indexing_tree = tracker_miner_fs_get_indexing_tree (TRACKER_MINER_FS (mf));
 	flags = TRACKER_DIRECTORY_FLAG_RECURSE |
 		TRACKER_DIRECTORY_FLAG_CHECK_MTIME |
-		TRACKER_DIRECTORY_FLAG_PRESERVE;
+		TRACKER_DIRECTORY_FLAG_PRESERVE |
+		TRACKER_DIRECTORY_FLAG_PRIORITY;
 
 	if (tracker_config_get_enable_monitors (mf->private->config)) {
 		flags |= TRACKER_DIRECTORY_FLAG_MONITOR;

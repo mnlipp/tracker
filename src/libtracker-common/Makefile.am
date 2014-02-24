@@ -1,5 +1,3 @@
-include $(top_srcdir)/Makefile.decl
-
 AM_CPPFLAGS = \
 	$(BUILD_CFLAGS) \
 	-I$(top_srcdir)/src \
@@ -26,6 +24,7 @@ libtracker_common_la_SOURCES = \
 	tracker-keyfile-object.c \
 	tracker-log.c \
 	tracker-sched.c \
+	tracker-storage.c \
 	tracker-type-utils.c \
 	tracker-utils.c \
 	tracker-crc32.c \
@@ -44,6 +43,7 @@ noinst_HEADERS = \
 	tracker-keyfile-object.h \
 	tracker-ontologies.h \
 	tracker-sched.h \
+	tracker-storage.h \
 	tracker-type-utils.h \
 	tracker-utils.h \
 	tracker-crc32.h \

@@ -1,3 +1,0 @@
-[ExtractorRule]
-ModulePath=libextract-libav.so
-MimeTypes=audio/*;video/*;

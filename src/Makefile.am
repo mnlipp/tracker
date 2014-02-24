@@ -1,5 +1,3 @@
-include $(top_srcdir)/Makefile.decl
-
 if HAVE_TRACKER_FTS
 libstemmer_dir = libstemmer
 endif
@@ -15,6 +13,7 @@ SUBDIRS =                                              \
 	libtracker-sparql                              \
 	$(libtrackerfts_dir)                           \
 	libtracker-bus                                 \
+	libtracker-control                             \
 	libtracker-data                                \
 	libtracker-direct                              \
 	libtracker-sparql-backend                      \

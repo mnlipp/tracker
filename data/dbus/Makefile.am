@@ -1,10 +1,9 @@
-include $(top_srcdir)/Makefile.decl
-
 configdir = $(datadir)/tracker
 
 config_DATA = \
 	tracker-backup.xml \
 	tracker-extract.xml \
+	tracker-extract-priority.xml \
 	tracker-miner.xml \
 	tracker-miner-web.xml \
 	tracker-resources.xml \

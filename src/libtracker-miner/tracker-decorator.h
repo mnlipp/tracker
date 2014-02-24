@@ -54,6 +54,7 @@ struct _TrackerDecorator {
  * @parent_class: parent object class.
  * @items_available: Called when there are resources to be processed.
  * @finished: Called when all resources have been processed.
+ * @padding: Reserved for future API improvements.
  *
  * An implementation that takes care of extracting extra metadata
  * specific to file types by talking to tracker-extract.
@@ -65,6 +66,9 @@ struct _TrackerDecoratorClass {
 
 	void (* items_available) (TrackerDecorator *decorator);
 	void (* finished)        (TrackerDecorator *decorator);
+
+	/* <Private> */
+	gpointer padding[10];
 };
 
 GType         tracker_decorator_get_type          (void) G_GNUC_CONST;
@@ -74,7 +78,8 @@ const gchar** tracker_decorator_get_class_names   (TrackerDecorator     *decorat
 guint         tracker_decorator_get_n_items       (TrackerDecorator     *decorator);
 
 void          tracker_decorator_prepend_id        (TrackerDecorator     *decorator,
-                                                   gint                  id);
+                                                   gint                  id,
+                                                   gint                  class_name_id);
 void          tracker_decorator_delete_id         (TrackerDecorator     *decorator,
                                                    gint                  id);
 
@@ -87,6 +92,9 @@ TrackerDecoratorInfo *
               tracker_decorator_next_finish       (TrackerDecorator     *decorator,
                                                    GAsyncResult         *result,
                                                    GError              **error);
+
+void          tracker_decorator_set_priority_rdf_types (TrackerDecorator    *decorator,
+                                                        const gchar * const *rdf_types);
 
 GType         tracker_decorator_info_get_type     (void) G_GNUC_CONST;
 

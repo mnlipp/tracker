@@ -51,12 +51,16 @@ struct _TrackerDecoratorFS {
 /**
  * TrackerDecoratorFSClass:
  * @parent_class: parent object class.
+ * @padding: Reserved for future API improvements.
  *
  * A class that takes care of resources on mount points added or
  * removed, this is based on #TrackerDecoratorClass.
  **/
 struct _TrackerDecoratorFSClass {
 	TrackerDecoratorClass parent_class;
+
+	/* <Private> */
+	gpointer padding[10];
 };
 
 GType              tracker_decorator_fs_get_type (void) G_GNUC_CONST;

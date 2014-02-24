@@ -71,15 +71,16 @@ gen-ChangeLog:
 functional-test:
 	cd tests/functional-tests/ && $(MAKE) $(AM_MAKEFLAGS) $@
 
-EXTRA_DIST =                                           \
+EXTRA_DIST +=                                          \
 	ChangeLog.pre-0-6-93                           \
+	Makefile.extractdirs                           \
 	gitlog-to-changelog                            \
 	intltool-extract.in                            \
 	intltool-merge.in                              \
 	intltool-update.in			       \
 	tracker.doap
 
-DISTCLEANFILES =                                       \
+DISTCLEANFILES +=                                      \
 	intltool-extract                               \
 	intltool-merge                                 \
 	intltool-update

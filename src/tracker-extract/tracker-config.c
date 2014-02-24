@@ -41,7 +41,8 @@ enum {
 	PROP_VERBOSITY,
 	PROP_SCHED_IDLE,
 	PROP_MAX_BYTES,
-	PROP_MAX_MEDIA_ART_WIDTH
+	PROP_MAX_MEDIA_ART_WIDTH,
+	PROP_WAIT_FOR_MINER_FS,
 };
 
 static TrackerConfigMigrationEntry migration[] = {
@@ -100,6 +101,14 @@ tracker_config_class_init (TrackerConfigClass *klass)
 	                                                   2048,
 	                                                   0,
 	                                                   G_PARAM_READWRITE));
+
+	g_object_class_install_property (object_class,
+	                                 PROP_WAIT_FOR_MINER_FS,
+	                                 g_param_spec_boolean ("wait-for-miner-fs",
+	                                                       "Wait for FS miner to be done before extracting",
+	                                                       "%TRUE to wait for tracker-miner-fs is done before extracting. %FAlSE otherwise",
+	                                                       FALSE,
+	                                                       G_PARAM_READWRITE));
 }
 
 static void
@@ -113,25 +122,22 @@ config_set_property (GObject      *object,
                      const GValue *value,
                      GParamSpec   *pspec)
 {
+	TrackerConfig *config = TRACKER_CONFIG (object);
+
 	switch (param_id) {
+	/* General */
+	/* NOTE: We handle these because we have to be able
+	 * to save these based on command line overrides.
+	 */
 	case PROP_VERBOSITY:
-		g_settings_set_enum (G_SETTINGS (object), "verbosity",
-		                     g_value_get_enum (value));
+		tracker_config_set_verbosity (config, g_value_get_enum (value));
 		break;
 
+	/* We don't care about the others... we don't save anyway. */
 	case PROP_SCHED_IDLE:
-		g_settings_set_enum (G_SETTINGS (object), "sched-idle",
-		                     g_value_get_enum (value));
-		break;
-
 	case PROP_MAX_BYTES:
-		g_settings_set_int (G_SETTINGS (object), "max-bytes",
-		                    g_value_get_int (value));
-		break;
-
 	case PROP_MAX_MEDIA_ART_WIDTH:
-		g_settings_set_int (G_SETTINGS (object), "max-media-art-width",
-		                    g_value_get_int (value));
+	case PROP_WAIT_FOR_MINER_FS:
 		break;
 
 	default:
@@ -146,25 +152,32 @@ config_get_property (GObject    *object,
                      GValue     *value,
                      GParamSpec *pspec)
 {
+	TrackerConfig *config = TRACKER_CONFIG (object);
+
 	switch (param_id) {
 	case PROP_VERBOSITY:
 		g_value_set_enum (value,
-		                  g_settings_get_enum (G_SETTINGS (object), "verbosity"));
+		                  tracker_config_get_verbosity (config));
 		break;
 
 	case PROP_SCHED_IDLE:
 		g_value_set_enum (value,
-		                  g_settings_get_enum (G_SETTINGS (object), "sched-idle"));
+		                  tracker_config_get_sched_idle (config));
 		break;
 
 	case PROP_MAX_BYTES:
 		g_value_set_int (value,
-		                 g_settings_get_int (G_SETTINGS (object), "max-bytes"));
+		                 tracker_config_get_max_bytes (config));
 		break;
 
 	case PROP_MAX_MEDIA_ART_WIDTH:
 		g_value_set_int (value,
-		                 g_settings_get_int (G_SETTINGS (object), "max-media-art-width"));
+		                 tracker_config_get_max_media_art_width (config));
+		break;
+
+	case PROP_WAIT_FOR_MINER_FS:
+		g_value_set_boolean (value,
+		                     tracker_config_get_wait_for_miner_fs (config));
 		break;
 
 	default:
@@ -187,16 +200,26 @@ static void
 config_constructed (GObject *object)
 {
 	TrackerConfigFile *config_file;
+	GSettings *settings;
 
 	(G_OBJECT_CLASS (tracker_config_parent_class)->constructed) (object);
 
-	g_settings_delay (G_SETTINGS (object));
+	settings = G_SETTINGS (object);
+
+	g_settings_delay (settings);
+
+	/* Set up bindings */
+	g_settings_bind (settings, "verbosity", object, "verbosity", G_SETTINGS_BIND_GET_NO_CHANGES);
+	g_settings_bind (settings, "sched-idle", object, "sched-idle", G_SETTINGS_BIND_GET);
+	g_settings_bind (settings, "max-bytes", object, "max-bytes", G_SETTINGS_BIND_GET);
+	g_settings_bind (settings, "max-media-art-width", object, "max-media-art-width", G_SETTINGS_BIND_GET);
+	g_settings_bind (settings, "wait-for-miner-fs", object, "wait-for-miner-fs", G_SETTINGS_BIND_GET);
 
 	/* Migrate keyfile-based configuration */
 	config_file = tracker_config_file_new ();
 
 	if (config_file) {
-		tracker_config_file_migrate (config_file, G_SETTINGS (object), migration);
+		tracker_config_file_migrate (config_file, settings, migration);
 		g_object_unref (config_file);
 	}
 }
@@ -213,13 +236,9 @@ tracker_config_new (void)
 gint
 tracker_config_get_verbosity (TrackerConfig *config)
 {
-	gint verbosity;
-
 	g_return_val_if_fail (TRACKER_IS_CONFIG (config), TRACKER_VERBOSITY_ERRORS);
 
-	g_object_get (config, "verbosity", &verbosity, NULL);
-
-	return verbosity;
+	return g_settings_get_enum (G_SETTINGS (config), "verbosity");
 }
 
 void
@@ -228,7 +247,7 @@ tracker_config_set_verbosity (TrackerConfig *config,
 {
 	g_return_if_fail (TRACKER_IS_CONFIG (config));
 
-	g_object_set (G_OBJECT (config), "verbosity", value, NULL);
+	g_settings_set_enum (G_SETTINGS (config), "verbosity", value);
 }
 
 gint
@@ -239,55 +258,26 @@ tracker_config_get_sched_idle (TrackerConfig *config)
 	return g_settings_get_enum (G_SETTINGS (config), "sched-idle");
 }
 
-void
-tracker_config_set_sched_idle (TrackerConfig *config,
-                               gint           value)
-{
-
-	g_return_if_fail (TRACKER_IS_CONFIG (config));
-
-	g_settings_set_enum (G_SETTINGS (config), "sched-idle", value);
-	g_object_notify (G_OBJECT (config), "sched-idle");
-}
-
 gint
 tracker_config_get_max_bytes (TrackerConfig *config)
 {
-	gint max_bytes;
-
 	g_return_val_if_fail (TRACKER_IS_CONFIG (config), 0);
 
-	g_object_get (config, "max-bytes", &max_bytes, NULL);
-
-	return max_bytes;
-}
-
-void
-tracker_config_set_max_bytes (TrackerConfig *config,
-                              gint           value)
-{
-	g_return_if_fail (TRACKER_IS_CONFIG (config));
-
-	g_object_set (G_OBJECT (config), "max-bytes", value, NULL);
+	return g_settings_get_int (G_SETTINGS (config), "max-bytes");
 }
 
 gint
 tracker_config_get_max_media_art_width (TrackerConfig *config)
 {
-	gint max_media_art_width;
-
 	g_return_val_if_fail (TRACKER_IS_CONFIG (config), 0);
 
-	g_object_get (config, "max-media-art-width", &max_media_art_width, NULL);
-
-	return max_media_art_width;
+	return g_settings_get_int (G_SETTINGS (config), "max-media-art-width");
 }
 
-void
-tracker_config_set_max_media_art_width (TrackerConfig *config,
-                                       gint           value)
+gboolean
+tracker_config_get_wait_for_miner_fs (TrackerConfig *config)
 {
-	g_return_if_fail (TRACKER_IS_CONFIG (config));
+	g_return_val_if_fail (TRACKER_IS_CONFIG (config), FALSE);
 
-	g_object_set (G_OBJECT (config), "max-media-art-width", value, NULL);
+	return g_settings_get_boolean (G_SETTINGS (config), "wait-for-miner-fs");
 }

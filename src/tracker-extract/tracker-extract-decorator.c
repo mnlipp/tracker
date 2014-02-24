@@ -20,14 +20,16 @@
 #include "config.h"
 
 #include <libtracker-extract/tracker-extract.h>
-
+#include <libtracker-common/tracker-ontologies.h>
 #include "tracker-extract-decorator.h"
+#include "tracker-extract-priority-dbus.h"
 
 enum {
 	PROP_EXTRACTOR = 1
 };
 
-#define TRACKER_EXTRACT_DATA_SOURCE "tracker:extractor-data-source"
+#define TRACKER_EXTRACT_DATA_SOURCE TRACKER_TRACKER_PREFIX "extractor-data-source"
+#define MAX_EXTRACTING_FILES 1
 
 #define TRACKER_EXTRACT_DECORATOR_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), TRACKER_TYPE_EXTRACT_DECORATOR, TrackerExtractDecoratorPrivate))
 
@@ -42,13 +44,39 @@ struct _ExtractData {
 struct _TrackerExtractDecoratorPrivate {
 	TrackerExtract *extractor;
 	GTimer *timer;
+	guint n_extracting_files;
+
+	/* DBus name -> AppData */
+	GHashTable *apps;
+	TrackerExtractDBusPriority *iface;
 };
 
+typedef struct {
+	guint watch_id;
+	gchar **rdf_types;
+} AppData;
+
+/* Preferably classes with tracker:notify true, if an
+ * extractor module handles new ones, it must be added
+ * here.
+ */
+static const gchar *supported_classes[] = {
+	"nfo:Document",
+	"nfo:Audio",
+	"nfo:Image",
+	"nfo:Video",
+	"nfo:FilesystemImage",
+	NULL
+};
+
+static GInitableIface *parent_initable_iface;
+
 static void decorator_get_next_file (TrackerDecorator *decorator);
+static void tracker_extract_decorator_initable_iface_init (GInitableIface *iface);
 
-
-G_DEFINE_TYPE (TrackerExtractDecorator, tracker_extract_decorator,
-               TRACKER_TYPE_DECORATOR_FS)
+G_DEFINE_TYPE_WITH_CODE (TrackerExtractDecorator, tracker_extract_decorator,
+                        TRACKER_TYPE_DECORATOR_FS,
+                        G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, tracker_extract_decorator_initable_iface_init))
 
 static void
 tracker_extract_decorator_get_property (GObject    *object,
@@ -96,6 +124,9 @@ tracker_extract_decorator_finalize (GObject *object)
 
 	if (priv->timer)
 		g_timer_destroy (priv->timer);
+
+	g_object_unref (priv->iface);
+	g_hash_table_unref (priv->apps);
 
 	G_OBJECT_CLASS (tracker_extract_decorator_parent_class)->finalize (object);
 }
@@ -161,9 +192,11 @@ get_metadata_cb (TrackerExtract *extract,
                  GAsyncResult   *result,
                  ExtractData    *data)
 {
+	TrackerExtractDecoratorPrivate *priv;
 	TrackerExtractInfo *info;
 	GTask *task;
 
+	priv = TRACKER_EXTRACT_DECORATOR (data->decorator)->priv;
 	task = tracker_decorator_info_get_task (data->decorator_info);
 	info = g_simple_async_result_get_op_res_gpointer (G_SIMPLE_ASYNC_RESULT (result));
 
@@ -179,6 +212,7 @@ get_metadata_cb (TrackerExtract *extract,
 		g_task_return_boolean (task, TRUE);
 	}
 
+	priv->n_extracting_files--;
 	decorator_get_next_file (data->decorator);
 
 	tracker_decorator_info_unref (data->decorator_info);
@@ -200,8 +234,8 @@ decorator_next_item_cb (TrackerDecorator *decorator,
 	info = tracker_decorator_next_finish (decorator, result, &error);
 
 	if (!info) {
-		if (tracker_decorator_get_n_items (decorator) != 0)
-			g_warning ("Next item could not be retrieved: %s\n", error->message);
+		priv->n_extracting_files--;
+		g_warning ("Next item could not be retrieved: %s\n", error->message);
 		g_error_free (error);
 		return;
 	}
@@ -224,9 +258,24 @@ decorator_next_item_cb (TrackerDecorator *decorator,
 static void
 decorator_get_next_file (TrackerDecorator *decorator)
 {
-	tracker_decorator_next (decorator, NULL,
-	                        (GAsyncReadyCallback) decorator_next_item_cb,
-	                        NULL);
+	TrackerExtractDecoratorPrivate *priv;
+	guint available_items;
+
+	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
+
+	if (!tracker_miner_is_started (TRACKER_MINER (decorator)) ||
+	    tracker_miner_is_paused (TRACKER_MINER (decorator)))
+		return;
+
+	available_items = tracker_decorator_get_n_items (decorator);
+	while (priv->n_extracting_files < MAX_EXTRACTING_FILES &&
+	       available_items > 0) {
+		priv->n_extracting_files++;
+		available_items--;
+		tracker_decorator_next (decorator, NULL,
+		                        (GAsyncReadyCallback) decorator_next_item_cb,
+		                        NULL);
+	}
 }
 
 static void
@@ -236,7 +285,9 @@ tracker_extract_decorator_paused (TrackerMiner *miner)
 
 	priv = TRACKER_EXTRACT_DECORATOR (miner)->priv;
 	g_debug ("Decorator paused\n");
-	g_timer_stop (priv->timer);
+
+	if (priv->timer)
+		g_timer_stop (priv->timer);
 }
 
 static void
@@ -247,7 +298,10 @@ tracker_extract_decorator_resumed (TrackerMiner *miner)
 	priv = TRACKER_EXTRACT_DECORATOR (miner)->priv;
 	g_debug ("Resuming processing of %d items\n",
 	         tracker_decorator_get_n_items (TRACKER_DECORATOR (miner)));
-	g_timer_continue (priv->timer);
+
+	if (priv->timer)
+		g_timer_continue (priv->timer);
+
 	decorator_get_next_file (TRACKER_DECORATOR (miner));
 }
 
@@ -259,7 +313,11 @@ tracker_extract_decorator_items_available (TrackerDecorator *decorator)
 	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
 	g_debug ("Starting processing of %d items\n",
 	         tracker_decorator_get_n_items (decorator));
+
 	priv->timer = g_timer_new ();
+	if (tracker_miner_is_paused (TRACKER_MINER (decorator)))
+		g_timer_stop (priv->timer);
+
 	decorator_get_next_file (decorator);
 }
 
@@ -275,6 +333,162 @@ tracker_extract_decorator_finished (TrackerDecorator *decorator)
 	g_timer_destroy (priv->timer);
 	priv->timer = NULL;
 	g_free (time_str);
+}
+
+static gboolean
+strv_contains (const gchar * const *strv,
+               const gchar         *needle)
+{
+	guint i;
+
+	for (i = 0; strv[i] != NULL; i++) {
+		if (g_str_equal (strv[i], needle))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static void
+string_array_add (GPtrArray   *array,
+                  const gchar *str)
+{
+	guint i;
+
+	for (i = 0; i < array->len; i++) {
+		if (g_str_equal (g_ptr_array_index (array, i), str))
+			return;
+	}
+
+	g_ptr_array_add (array, (gchar *) str);
+}
+
+static void
+priority_changed (TrackerExtractDecorator *decorator)
+{
+	TrackerExtractDecoratorPrivate *priv;
+	GPtrArray                      *array;
+	GHashTableIter                  iter;
+	gpointer                        value;
+
+	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
+
+	/* Construct an strv removing dups */
+	array = g_ptr_array_new ();
+	g_hash_table_iter_init (&iter, priv->apps);
+	while (g_hash_table_iter_next (&iter, NULL, &value)) {
+		AppData *data = value;
+		guint i;
+
+		for (i = 0; data->rdf_types[i] != NULL; i++) {
+			string_array_add (array, data->rdf_types[i]);
+		}
+	}
+	g_ptr_array_add (array, NULL);
+
+	tracker_decorator_set_priority_rdf_types (TRACKER_DECORATOR (decorator),
+	                                          (const gchar * const *) array->pdata);
+
+	g_ptr_array_unref (array);
+}
+
+static void
+app_data_destroy (AppData *data)
+{
+	g_bus_unwatch_name (data->watch_id);
+	g_strfreev (data->rdf_types);
+	g_slice_free (AppData, data);
+}
+
+static void
+name_vanished_cb (GDBusConnection *connection,
+                  const gchar     *name,
+                  gpointer         user_data)
+{
+	TrackerExtractDecorator        *decorator = user_data;
+	TrackerExtractDecoratorPrivate *priv;
+
+	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
+	g_hash_table_remove (priv->apps, name);
+	priority_changed (decorator);
+}
+
+static gboolean
+handle_set_rdf_types_cb (TrackerExtractDBusPriority *iface,
+                         GDBusMethodInvocation      *invocation,
+                         const gchar * const        *rdf_types,
+                         TrackerExtractDecorator    *decorator)
+{
+	TrackerExtractDecoratorPrivate *priv;
+	const gchar *sender;
+	GDBusConnection *conn;
+	AppData *data;
+	guint i;
+
+	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
+	sender = g_dbus_method_invocation_get_sender (invocation);
+	conn = g_dbus_method_invocation_get_connection (invocation);
+
+	if (rdf_types[0] == NULL) {
+		g_hash_table_remove (priv->apps, sender);
+		goto out;
+	}
+
+	/* Verify all types are supported */
+	for (i = 0; rdf_types[i] != NULL; i++) {
+		if (!strv_contains (supported_classes, rdf_types[i])) {
+			g_dbus_method_invocation_return_error (invocation,
+			                                       TRACKER_DBUS_ERROR,
+			                                       TRACKER_DBUS_ERROR_ASSERTION_FAILED,
+			                                       "Unsupported rdf:type %s",
+			                                       rdf_types[i]);
+			return TRUE;
+		}
+	}
+
+	data = g_hash_table_lookup (priv->apps, sender);
+	if (data == NULL) {
+		data = g_slice_new0 (AppData);
+		data->watch_id = g_bus_watch_name_on_connection (conn,
+		                                                 sender,
+		                                                 G_BUS_NAME_WATCHER_FLAGS_NONE,
+		                                                 NULL,
+		                                                 name_vanished_cb,
+		                                                 decorator, NULL);
+		g_hash_table_insert (priv->apps,
+		                     g_strdup (sender),
+		                     data);
+	} else {
+		g_strfreev (data->rdf_types);
+	}
+
+	data->rdf_types = g_strdupv ((GStrv) rdf_types);
+
+out:
+	priority_changed (decorator);
+
+	tracker_extract_dbus_priority_complete_set_rdf_types (iface, invocation);
+
+	return TRUE;
+}
+
+static gboolean
+handle_clear_rdf_types_cb (TrackerExtractDBusPriority *iface,
+                           GDBusMethodInvocation      *invocation,
+                           TrackerExtractDecorator    *decorator)
+{
+	TrackerExtractDecoratorPrivate *priv;
+	const gchar *sender;
+
+	priv = TRACKER_EXTRACT_DECORATOR (decorator)->priv;
+	sender = g_dbus_method_invocation_get_sender (invocation);
+
+	g_hash_table_remove (priv->apps, sender);
+	priority_changed (decorator);
+
+	tracker_extract_dbus_priority_complete_clear_rdf_types (iface, invocation);
+
+	return TRUE;
 }
 
 static void
@@ -313,29 +527,79 @@ tracker_extract_decorator_init (TrackerExtractDecorator *decorator)
 	decorator->priv = TRACKER_EXTRACT_DECORATOR_GET_PRIVATE (decorator);
 }
 
+static gboolean
+tracker_extract_decorator_initable_init (GInitable     *initable,
+                                         GCancellable  *cancellable,
+                                         GError       **error)
+{
+	TrackerExtractDecorator        *decorator;
+	TrackerExtractDecoratorPrivate *priv;
+	GDBusConnection                *conn;
+	gboolean                        ret = TRUE;
+
+	decorator = TRACKER_EXTRACT_DECORATOR (initable);
+	priv = decorator->priv;
+
+	priv->apps = g_hash_table_new_full (g_str_hash,
+	                                    g_str_equal,
+	                                    g_free,
+	                                    (GDestroyNotify) app_data_destroy);
+
+	priv->iface = tracker_extract_dbus_priority_skeleton_new ();
+	g_signal_connect (priv->iface, "handle-set-rdf-types",
+	                  G_CALLBACK (handle_set_rdf_types_cb),
+	                  decorator);
+	g_signal_connect (priv->iface, "handle-clear-rdf-types",
+	                  G_CALLBACK (handle_clear_rdf_types_cb),
+	                  decorator);
+
+	tracker_extract_dbus_priority_set_supported_rdf_types (priv->iface,
+	                                                       supported_classes);
+
+	conn = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, error);
+	if (conn == NULL) {
+		ret = FALSE;
+		goto out;
+	}
+
+	if (!g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (priv->iface),
+	                                       conn,
+	                                       "/org/freedesktop/Tracker1/Extract/Priority",
+	                                       error)) {
+		ret = FALSE;
+		goto out;
+	}
+
+	/* Chainup to parent's init last, to have a chance to export our
+	 * DBus interface before RequestName returns. Otherwise our iface
+	 * won't be ready by the time the tracker-extract appear on the bus. */
+	if (!parent_initable_iface->init (initable, cancellable, error)) {
+		ret = FALSE;
+	}
+
+out:
+	g_clear_object (&conn);
+
+	return ret;
+}
+
+static void
+tracker_extract_decorator_initable_iface_init (GInitableIface *iface)
+{
+	parent_initable_iface = g_type_interface_peek_parent (iface);
+	iface->init = tracker_extract_decorator_initable_init;
+}
+
 TrackerDecorator *
 tracker_extract_decorator_new (TrackerExtract  *extract,
                                GCancellable    *cancellable,
                                GError         **error)
 {
-	/* Preferably classes with tracker:notify true, if an
-	 * extractor module handles new ones, it must be added
-	 * here.
-	 */
-	gchar *classes[] = {
-		"nfo:Document",
-		"nfo:Audio",
-		"nfo:Image",
-		"nfo:Video",
-		"nfo:FilesystemImage",
-		NULL
-	};
-
 	return g_initable_new (TRACKER_TYPE_EXTRACT_DECORATOR,
 	                       cancellable, error,
 	                       "name", "Extract",
 	                       "data-source", TRACKER_EXTRACT_DATA_SOURCE,
-	                       "class-names", classes,
+	                       "class-names", supported_classes,
 	                       "extractor", extract,
 	                       NULL);
 }

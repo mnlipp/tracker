@@ -21,6 +21,7 @@
 
 #include "tracker-decorator.h"
 #include "tracker-decorator-internal.h"
+#include "tracker-priority-queue.h"
 
 #define QUERY_BATCH_SIZE 100
 #define DEFAULT_BATCH_SIZE 100
@@ -55,6 +56,8 @@ struct _TrackerDecoratorInfo {
 struct _ElemNode {
 	TrackerDecoratorInfo *info;
 	gint id;
+	gint class_name_id;
+	gboolean prepend;
 };
 
 struct _TrackerDecoratorPrivate {
@@ -62,13 +65,14 @@ struct _TrackerDecoratorPrivate {
 	gchar *data_source;
 	GStrv class_names;
 
-	GQueue *elem_queue;
+	TrackerPriorityQueue *elem_queue;
 	GHashTable *elems;
 	GPtrArray *sparql_buffer;
 	GTimer *timer;
 	GQueue next_elem_queue;
 
 	GArray *class_name_ids;
+	GArray *priority_class_name_ids;
 	gint rdf_type_id;
 	gint nie_data_source_id;
 	gint data_source_id;
@@ -80,7 +84,8 @@ struct _TrackerDecoratorPrivate {
 enum {
 	PROP_DATA_SOURCE = 1,
 	PROP_CLASS_NAMES,
-	PROP_COMMIT_BATCH_SIZE
+	PROP_COMMIT_BATCH_SIZE,
+	PROP_PRIORITY_RDF_TYPES,
 };
 
 enum {
@@ -153,12 +158,13 @@ decorator_update_state (TrackerDecorator *decorator,
 	TrackerDecoratorPrivate *priv;
 	gint remaining_time = -1;
 	gdouble progress = 1;
+	guint length;
 
 	priv = decorator->priv;
+	length = tracker_priority_queue_get_length (priv->elem_queue);
 
-	if (priv->elem_queue->length > 0) {
-		progress = 1 - ((gdouble) priv->elem_queue->length /
-		                priv->stats_n_elems);
+	if (length > 0) {
+		progress = 1 - ((gdouble) length / priv->stats_n_elems);
 		remaining_time = 0;
 	}
 
@@ -169,11 +175,10 @@ decorator_update_state (TrackerDecorator *decorator,
 
 		/* FIXME: Quite naive calculation */
 		elapsed = g_timer_elapsed (priv->timer, NULL);
-		elems_done = priv->stats_n_elems - priv->elem_queue->length;
+		elems_done = priv->stats_n_elems - length;
 
 		if (elems_done > 0)
-			remaining_time = (priv->elem_queue->length * elapsed) /
-				elems_done;
+			remaining_time = (length * elapsed) / elems_done;
 	}
 
 	g_object_set (decorator,
@@ -185,9 +190,46 @@ decorator_update_state (TrackerDecorator *decorator,
 		g_object_set (decorator, "status", message, NULL);
 }
 
+static gboolean
+class_name_array_contains (GArray *array,
+                           gint    id)
+{
+	guint i;
+
+	for (i = 0; i < array->len; i++) {
+		if (id == g_array_index (array, gint, i))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static gint
+elem_node_get_priority (TrackerDecorator *decorator,
+                        ElemNode         *node)
+{
+	TrackerDecoratorPrivate *priv;
+	gboolean prior;
+
+	priv = decorator->priv;
+
+	/* We want [prepend and prior, prior, prepend, the rest] */
+	prior = class_name_array_contains (priv->priority_class_name_ids,
+	                                   node->class_name_id);
+	if (prior && node->prepend)
+		return G_PRIORITY_HIGH - 1;
+	else if (prior)
+		return G_PRIORITY_HIGH;
+	else if (node->prepend)
+		return G_PRIORITY_HIGH + 1;
+
+	return G_PRIORITY_DEFAULT;
+}
+
 static void
 element_add (TrackerDecorator *decorator,
              gint              id,
+             gint              class_name_id,
              gboolean          prepend)
 {
 	TrackerDecoratorPrivate *priv;
@@ -203,14 +245,11 @@ element_add (TrackerDecorator *decorator,
 	first_elem = g_hash_table_size (priv->elems) == 0;
 	node = g_new0 (ElemNode, 1);
 	node->id = id;
+	node->class_name_id = class_name_id;
+	node->prepend = prepend;
 
-	if (prepend) {
-		g_queue_push_head (priv->elem_queue, node);
-		elem = priv->elem_queue->head;
-	} else {
-		g_queue_push_tail (priv->elem_queue, node);
-		elem = priv->elem_queue->tail;
-	}
+	elem = tracker_priority_queue_add (priv->elem_queue, node,
+	                                   elem_node_get_priority (decorator, node));
 
 	g_hash_table_insert (priv->elems, GINT_TO_POINTER (id), elem);
 	priv->stats_n_elems++;
@@ -243,7 +282,7 @@ element_remove_link (TrackerDecorator *decorator,
 		return;
 	}
 
-	g_queue_delete_link (priv->elem_queue, elem_link);
+	tracker_priority_queue_remove_node (priv->elem_queue, elem_link);
 	g_hash_table_remove (priv->elems, GINT_TO_POINTER (node->id));
 
 	if (emit && g_hash_table_size (priv->elems) == 0) {
@@ -416,14 +455,19 @@ element_ensure_task (ElemNode         *node,
 
 static gint
 get_class_id (TrackerSparqlConnection *conn,
-              const gchar             *class)
+              const gchar             *class,
+              gboolean                 is_iri)
 {
 	TrackerSparqlCursor *cursor;
 	GError *error = NULL;
 	gchar *query;
 	gint id = -1;
 
-	query = g_strdup_printf ("select tracker:id (%s) { }", class);
+	if (is_iri)
+		query = g_strdup_printf ("select tracker:id (<%s>) { }", class);
+	else
+		query = g_strdup_printf ("select tracker:id (%s) { }", class);
+
 	cursor = tracker_sparql_connection_query (conn, query, NULL, &error);
 	g_free (query);
 
@@ -473,7 +517,7 @@ tracker_decorator_validate_class_ids (TrackerDecorator *decorator,
 			gchar *copy;
 			gint id;
 
-			id = get_class_id (sparql_conn, class_names[i]);
+			id = get_class_id (sparql_conn, class_names[i], FALSE);
 
 			if (id >= 0) {
 				copy = g_strdup (class_names[i]);
@@ -523,24 +567,69 @@ tracker_decorator_set_property (GObject      *object,
                                 const GValue *value,
                                 GParamSpec   *pspec)
 {
+	TrackerDecorator *decorator = TRACKER_DECORATOR (object);
 	TrackerDecoratorPrivate *priv;
 
-	priv = TRACKER_DECORATOR (object)->priv;
+	priv = decorator->priv;
 
 	switch (param_id) {
 	case PROP_DATA_SOURCE:
 		priv->data_source = g_value_dup_string (value);
 		break;
 	case PROP_CLASS_NAMES:
-		tracker_decorator_validate_class_ids (TRACKER_DECORATOR (object),
+		tracker_decorator_validate_class_ids (decorator,
 		                                      g_value_get_boxed (value));
 		break;
 	case PROP_COMMIT_BATCH_SIZE:
 		priv->batch_size = g_value_get_int (value);
 		break;
+	case PROP_PRIORITY_RDF_TYPES:
+		tracker_decorator_set_priority_rdf_types (decorator,
+		                                          g_value_get_boxed (value));
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, param_id, pspec);
 	}
+}
+
+static void
+query_type_and_add_element (TrackerDecorator *decorator,
+                            gint subject)
+{
+	TrackerSparqlConnection *sparql_conn;
+	TrackerSparqlCursor *cursor;
+	GString *query;
+	GError *error = NULL;
+
+	sparql_conn = tracker_miner_get_connection (TRACKER_MINER (decorator));
+
+	query = g_string_new (NULL);
+	g_string_append_printf (query, "select tracker:id (?type) {"
+	                               "  ?urn a ?type . "
+	                               "  FILTER (tracker:id(?urn) = %d ", subject);
+	_tracker_decorator_query_append_rdf_type_filter (decorator, query);
+	g_string_append (query, ")}");
+
+	cursor = tracker_sparql_connection_query (sparql_conn, query->str,
+	                                          NULL, &error);
+	g_string_free (query, TRUE);
+
+	if (error) {
+		g_critical ("Could not get type ID for '%d': %s\n",
+		            subject, error->message);
+		g_error_free (error);
+		return;
+	}
+
+	if (!tracker_sparql_cursor_next (cursor, NULL, NULL)) {
+		g_critical ("'%d' doesn't have a known type", subject);
+	} else {
+		element_add (decorator, subject,
+		             tracker_sparql_cursor_get_integer (cursor, 0),
+		             FALSE);
+	}
+
+	g_object_unref (cursor);
 }
 
 static void
@@ -559,9 +648,15 @@ handle_deletes (TrackerDecorator *decorator,
 		else if (predicate == priv->nie_data_source_id &&
 			 object == priv->data_source_id) {
 			/* If only the decorator datasource is removed,
-			 * re-process the file from scratch.
-			 */
-			element_add (decorator, subject, FALSE);
+			 * re-process the file from scratch if it's not already
+			 * queued. We don't know its class_name_id, so we have
+			 * to query it first. This should be rare enough that
+			 * it doesn't matter to accumulate them to query in
+			 * batches. */
+			if (!g_hash_table_contains (priv->elems,
+			                            GINT_TO_POINTER (subject))) {
+				query_type_and_add_element (decorator, subject);
+			}
 		}
 	}
 }
@@ -571,16 +666,10 @@ class_name_id_handled (TrackerDecorator *decorator,
                        gint              id)
 {
 	TrackerDecoratorPrivate *priv;
-	guint i;
 
 	priv = decorator->priv;
 
-	for (i = 0; i < priv->class_name_ids->len; i++) {
-		if (id == g_array_index (priv->class_name_ids, gint, i))
-			return TRUE;
-	}
-
-	return FALSE;
+	return class_name_array_contains (priv->class_name_ids, id);
 }
 
 static void
@@ -596,7 +685,7 @@ handle_updates (TrackerDecorator *decorator,
 	                            &graph, &subject, &predicate, &object)) {
 		if (predicate == priv->rdf_type_id &&
 		    class_name_id_handled (decorator, object))
-			element_add (decorator, subject, FALSE);
+			element_add (decorator, subject, object, FALSE);
 	}
 }
 
@@ -640,9 +729,9 @@ tracker_decorator_initable_init (GInitable     *initable,
 	if (g_cancellable_is_cancelled (cancellable))
 		return FALSE;
 
-	priv->rdf_type_id = get_class_id (sparql_conn, "rdf:type");
-	priv->nie_data_source_id = get_class_id (sparql_conn, "nie:dataSource");
-	priv->data_source_id = get_class_id (sparql_conn, priv->data_source);
+	priv->rdf_type_id = get_class_id (sparql_conn, "rdf:type", FALSE);
+	priv->nie_data_source_id = get_class_id (sparql_conn, "nie:dataSource", FALSE);
+	priv->data_source_id = get_class_id (sparql_conn, priv->data_source, TRUE);
 	tracker_decorator_validate_class_ids (decorator, priv->class_names);
 
 	priv->graph_updated_signal_id =
@@ -682,6 +771,7 @@ tracker_decorator_finalize (GObject *object)
 	TrackerDecoratorPrivate *priv;
 	TrackerDecorator *decorator;
 	GDBusConnection *conn;
+	GList *l;
 
 	decorator = TRACKER_DECORATOR (object);
 	priv = decorator->priv;
@@ -692,11 +782,12 @@ tracker_decorator_finalize (GObject *object)
 		                                      priv->graph_updated_signal_id);
 	}
 
-	while (priv->elem_queue->head)
-		element_remove_link (decorator, priv->elem_queue->head, FALSE);
+	while ((l = tracker_priority_queue_get_head (priv->elem_queue)))
+		element_remove_link (decorator, l, FALSE);
 
 	g_array_unref (priv->class_name_ids);
-	g_queue_free (priv->elem_queue);
+	tracker_priority_queue_unref (priv->elem_queue);
+	g_array_unref (priv->priority_class_name_ids);
 	g_hash_table_unref (priv->elems);
 	g_free (priv->data_source);
 	g_strfreev (priv->class_names);
@@ -720,14 +811,13 @@ _tracker_decorator_query_append_rdf_type_filter (TrackerDecorator *decorator,
 	if (!class_names || !*class_names)
 		return;
 
-	g_string_append (query, "&& (");
+	g_string_append (query, "&& ?type IN (");
 
 	while (class_names[i]) {
 		if (i != 0)
-			g_string_append (query, "||");
+			g_string_append (query, ",");
 
-		g_string_append_printf (query, "EXISTS { ?urn a %s }",
-		                        class_names[i]);
+		g_string_append (query, class_names[i]);
 		i++;
 	}
 
@@ -754,7 +844,8 @@ query_elements_cb (GObject      *object,
 
 	while (tracker_sparql_cursor_next (cursor, NULL, NULL)) {
 		gint id = tracker_sparql_cursor_get_integer (cursor, 0);
-		element_add (user_data, id, TRUE);
+		gint class_name_id = tracker_sparql_cursor_get_integer (cursor, 1);
+		element_add (user_data, id, class_name_id, TRUE);
 	}
 
 	g_object_unref (cursor);
@@ -801,8 +892,9 @@ tracker_decorator_started (TrackerMiner *miner)
 
 	g_timer_start (priv->timer);
 	data_source = tracker_decorator_get_data_source (decorator);
-	query = g_string_new ("SELECT tracker:id(?urn) { "
-	                      "  ?urn a rdfs:Resource . ");
+	query = g_string_new ("SELECT tracker:id(?urn) tracker:id(?type) { "
+	                      "  ?urn a rdfs:Resource ; "
+	                      "       a ?type. ");
 
 	g_string_append_printf (query,
 	                        "FILTER (! EXISTS { ?urn nie:dataSource <%s> } ",
@@ -856,6 +948,13 @@ tracker_decorator_class_init (TrackerDecoratorClass *klass)
 	                                                   "Number of items per update batch",
 	                                                   0, G_MAXINT, DEFAULT_BATCH_SIZE,
 	                                                   G_PARAM_READWRITE));
+	g_object_class_install_property (object_class,
+	                                 PROP_PRIORITY_RDF_TYPES,
+	                                 g_param_spec_boxed ("priority-rdf-types",
+	                                                     "Priority RDF types",
+	                                                     "rdf:type that needs to be extracted first",
+	                                                     G_TYPE_STRV,
+	                                                     G_PARAM_WRITABLE));
 	/**
 	 * TrackerDecorator::items-available:
 	 * @decorator: the #TrackerDecorator
@@ -902,8 +1001,9 @@ tracker_decorator_init (TrackerDecorator *decorator)
 
 	decorator->priv = priv = TRACKER_DECORATOR_GET_PRIVATE (decorator);
 	priv->elems = g_hash_table_new (NULL, NULL);
-	priv->elem_queue = g_queue_new ();
+	priv->elem_queue = tracker_priority_queue_new ();
 	priv->class_name_ids = g_array_new (FALSE, FALSE, sizeof (gint));
+	priv->priority_class_name_ids = g_array_new (FALSE, FALSE, sizeof (gint));
 	priv->batch_size = DEFAULT_BATCH_SIZE;
 	priv->sparql_buffer = g_ptr_array_new_with_free_func (g_free);
 	priv->timer = g_timer_new ();
@@ -976,7 +1076,8 @@ tracker_decorator_get_n_items (TrackerDecorator *decorator)
 /**
  * tracker_decorator_prepend_id:
  * @decorator: a #TrackerDecorator.
- * @id: an ID.
+ * @id: the ID of the resource ID.
+ * @class_name_id: the ID of the resource's class.
  *
  * Adds resource needing extended metadata extraction to the queue.
  * @id is the same IDs emitted by tracker-store when the database is updated for
@@ -986,11 +1087,12 @@ tracker_decorator_get_n_items (TrackerDecorator *decorator)
  **/
 void
 tracker_decorator_prepend_id (TrackerDecorator *decorator,
-                              gint              id)
+                              gint              id,
+                              gint              class_name_id)
 {
 	g_return_if_fail (TRACKER_IS_DECORATOR (decorator));
 
-	element_add (decorator, id, TRUE);
+	element_add (decorator, id, class_name_id, TRUE);
 }
 
 /**
@@ -1141,7 +1243,9 @@ complete_tasks_or_query (TrackerDecorator *decorator)
 
 	priv = decorator->priv;
 
-	for (l = priv->elem_queue->head; l != NULL; l = l->next) {
+	for (l = tracker_priority_queue_get_head (priv->elem_queue);
+	     l != NULL;
+	     l = l->next) {
 		ElemNode *node = l->data;
 
 		/* The next item isn't queried yet, do it now */
@@ -1235,7 +1339,7 @@ tracker_decorator_next (TrackerDecorator    *decorator,
  * tracker_decorator_next() to return the result of the task be it an
  * error or not.
  *
- * Returns: (transfer full) (boxed): a #TrackerDecoratorInfo on success or
+ * Returns: (transfer full): a #TrackerDecoratorInfo on success or
  *  #NULL on error. Free with tracker_decorator_info_unref().
  *
  * Since: 0.18
@@ -1250,6 +1354,53 @@ tracker_decorator_next_finish (TrackerDecorator  *decorator,
 	g_return_val_if_fail (!error || !*error, NULL);
 
 	return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+void
+tracker_decorator_set_priority_rdf_types (TrackerDecorator    *decorator,
+                                          const gchar * const *rdf_types)
+{
+	TrackerDecoratorPrivate *priv;
+	TrackerPriorityQueue *new_queue;
+	guint i, j;
+	GList *elem_link;
+
+	g_return_if_fail (TRACKER_DECORATOR (decorator));
+	g_return_if_fail (rdf_types != NULL);
+
+	priv = decorator->priv;
+
+	if (priv->priority_class_name_ids->len > 0)
+		g_array_remove_range (priv->priority_class_name_ids, 0,
+		                      priv->priority_class_name_ids->len);
+
+	for (i = 0; rdf_types[i] != NULL; i++) {
+		for (j = 0; priv->class_names[j] != NULL; j++) {
+			gint id;
+
+			if (!g_str_equal (rdf_types[i], priv->class_names[j]))
+				continue;
+
+			/* priv->class_names and priv->class_name_ids are in the
+			 * same order */
+			id = g_array_index (priv->class_name_ids, gint, j);
+			g_array_append_val (priv->priority_class_name_ids, id);
+			break;
+		}
+	}
+
+	/* We have to re-evaluate the priority of each element. We also have to
+	 * keep the same elem_link because they are referenced in priv->elems.
+	 * So we create a new priority queue and transfer nodes one by one. */
+	new_queue = tracker_priority_queue_new ();
+	while ((elem_link = tracker_priority_queue_pop_node (priv->elem_queue, NULL))) {
+		ElemNode *node = elem_link->data;
+
+		tracker_priority_queue_add_node (new_queue, elem_link,
+		                                 elem_node_get_priority (decorator, node));
+	}
+	tracker_priority_queue_unref (priv->elem_queue);
+	priv->elem_queue = new_queue;
 }
 
 /**

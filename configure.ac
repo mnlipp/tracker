@@ -13,14 +13,14 @@ AC_PREREQ([2.64])
 # set TRACKER_BINARY_AGE and TRACKER_INTERFACE_AGE to 0.
 m4_define([tracker_major_version], [0])
 m4_define([tracker_minor_version], [17])
-m4_define([tracker_micro_version], [1])
+m4_define([tracker_micro_version], [4])
 m4_define([tracker_interface_age], [0])
 m4_define([tracker_binary_age],
           [m4_eval(100 * tracker_minor_version + tracker_micro_version)])
 m4_define([tracker_version],
           [tracker_major_version.tracker_minor_version.tracker_micro_version])
 # This is the X.Y used in -llibtracker-FOO-X.Y
-m4_define([tracker_api_version], [0.18])
+m4_define([tracker_api_version], [1.0])
 
 # libtool version related macros
 m4_define([tracker_lt_release], [tracker_major_version.tracker_minor_version])
@@ -113,6 +113,7 @@ AC_PROG_INSTALL
 AC_PROG_MAKE_SET
 
 GLIB_GSETTINGS
+GLIB_TESTS
 
 # Initialize libtool
 LT_PREREQ([2.2])
@@ -212,6 +213,9 @@ SQLITE_REQUIRED=3.7.9
 # Needed to generate .gir files,
 # see http://live.gnome.org/GnomeGoals/AddGObjectIntrospectionSupport
 GOBJECT_INTROSPECTION_CHECK([0.9.5])
+
+GLIB_PREFIX="`$PKG_CONFIG --variable=prefix glib-2.0`"
+AC_SUBST(GLIB_PREFIX)
 
 # Check for libpng 1.2 or higher
 PKG_CHECK_MODULES(LIBPNG, [libpng >= 1.2])
@@ -529,7 +533,7 @@ AC_SUBST(GCOV_LIBS)
 # NOTE: BUILD_VALACFLAGS are for the sources built by Vala,
 #       not for .vala files themselves.
 ####################################################################
-BUILD_VALAFLAGS="-g --target-glib=2.34"
+BUILD_VALAFLAGS="-g --target-glib=${GLIB_REQUIRED}"
 BUILD_VALACFLAGS="${WARN_VALACFLAGS} ${GCOV_CFLAGS} -DG_LOG_DOMAIN=\\\"Tracker\\\" -DTRACKER_COMPILATION"
 BUILD_CFLAGS="${WARN_CFLAGS} ${GCOV_CFLAGS} -DG_LOG_DOMAIN=\\\"Tracker\\\" -DTRACKER_COMPILATION"
 BUILD_LIBS="${GCOV_LIBS}"
@@ -2511,17 +2515,17 @@ AC_CONFIG_FILES([
 	data/Makefile
 	data/miners/Makefile
 	data/ontologies/Makefile
+	data/tracker-control.pc
 	data/tracker-sparql.pc
-	data/tracker-extract.pc
 	data/tracker-miner.pc
 	docs/Makefile
 	docs/design/Makefile
 	docs/manpages/Makefile
 	docs/reference/Makefile
+	docs/reference/libtracker-control/Makefile
+	docs/reference/libtracker-control/version.xml
 	docs/reference/libtracker-sparql/Makefile
 	docs/reference/libtracker-sparql/version.xml
-	docs/reference/libtracker-extract/Makefile
-	docs/reference/libtracker-extract/version.xml
 	docs/reference/libtracker-miner/Makefile
 	docs/reference/libtracker-miner/version.xml
 	docs/reference/ontology/Makefile
@@ -2534,6 +2538,7 @@ AC_CONFIG_FILES([
 	src/libtracker-common/Makefile
 	src/libtracker-sparql/Makefile
 	src/libtracker-bus/Makefile
+	src/libtracker-control/Makefile
 	src/libtracker-data/Makefile
 	src/libtracker-direct/Makefile
 	src/libtracker-sparql-backend/Makefile
@@ -2560,7 +2565,6 @@ AC_CONFIG_FILES([
         src/plugins/thunderbird/chrome/Makefile
         src/plugins/thunderbird/chrome/content/Makefile
         src/plugins/thunderbird/chrome/locale/Makefile
-        src/plugins/thunderbird/chrome/locale/en-US/Makefile
         src/plugins/thunderbird/chrome/skin/Makefile
         src/plugins/thunderbird/defaults/Makefile
         src/plugins/thunderbird/defaults/preferences/Makefile
@@ -2569,9 +2573,6 @@ AC_CONFIG_FILES([
         src/plugins/firefox/chrome/Makefile
         src/plugins/firefox/chrome/content/Makefile
         src/plugins/firefox/chrome/locale/Makefile
-        src/plugins/firefox/chrome/locale/en-US/Makefile
-        src/plugins/firefox/chrome/locale/es-ES/Makefile
-        src/plugins/firefox/chrome/locale/fr-FR/Makefile
         src/plugins/firefox/chrome/skin/Makefile
         src/plugins/firefox/defaults/Makefile
         src/plugins/firefox/defaults/preferences/Makefile
