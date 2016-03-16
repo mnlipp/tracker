@@ -21,10 +21,6 @@
 
 #include "config.h"
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -52,12 +48,8 @@
 
 #include "tracker-main.h"
 
-/* Time in seconds before we kill the forked child process used for
- * content extraction */
+/* Time in seconds before we stop processing content */
 #define EXTRACTION_PROCESS_TIMEOUT 10
-
-/* Size of the buffer to use when reading, in bytes */
-#define BUFFER_SIZE 65535
 
 typedef struct {
 	gchar *title;
@@ -201,28 +193,28 @@ read_outline (PopplerDocument      *document,
 	}
 }
 
-static GString *
+static gchar *
 extract_content_text (PopplerDocument *document,
                       gsize            n_bytes)
 {
-	gint n_pages, i = 0;
 	GString *string;
 	GTimer *timer;
-	gsize remaining_bytes = n_bytes;
+	gsize remaining_bytes;
+	gint n_pages, i;
+	gdouble elapsed;
 
 	n_pages = poppler_document_get_n_pages (document);
 	string = g_string_new ("");
 	timer = g_timer_new ();
 
-	while (i < n_pages &&
-	       remaining_bytes > 0) {
+	for (i = 0, remaining_bytes = n_bytes, elapsed = g_timer_elapsed (timer, NULL);
+	     i < n_pages && remaining_bytes > 0 && elapsed < EXTRACTION_PROCESS_TIMEOUT;
+	     i++, elapsed = g_timer_elapsed (timer, NULL)) {
 		PopplerPage *page;
 		gsize written_bytes = 0;
 		gchar *text;
 
 		page = poppler_document_get_page (document, i);
-		i++;
-
 		text = poppler_page_get_text (page);
 
 		if (!text) {
@@ -239,7 +231,7 @@ extract_content_text (PopplerDocument *document,
 
 		remaining_bytes -= written_bytes;
 
-		g_debug ("Child: Extracted %" G_GSIZE_FORMAT " bytes from page %d, "
+		g_debug ("Extracted %" G_GSIZE_FORMAT " bytes from page %d, "
 		         "%" G_GSIZE_FORMAT " bytes remaining",
 		         written_bytes, i, remaining_bytes);
 
@@ -247,7 +239,11 @@ extract_content_text (PopplerDocument *document,
 		g_object_unref (page);
 	}
 
-	g_debug ("Child: Content extraction finished: %d/%d pages indexed in %2.2f seconds, "
+	if (elapsed >= EXTRACTION_PROCESS_TIMEOUT) {
+		g_debug ("Extraction timed out, %d seconds reached", EXTRACTION_PROCESS_TIMEOUT);
+	}
+
+	g_debug ("Content extraction finished: %d/%d pages indexed in %2.2f seconds, "
 	         "%" G_GSIZE_FORMAT " bytes extracted",
 	         i,
 	         n_pages,
@@ -256,262 +252,7 @@ extract_content_text (PopplerDocument *document,
 
 	g_timer_destroy (timer);
 
-	return string;
-}
-
-static void
-extract_content_child_process (PopplerDocument *document,
-                               gsize            n_bytes,
-                               int              fd[2])
-{
-	GString *str;
-	gint64 size;
-	GOutputStream *output_stream;
-	GDataOutputStream *dataout_stream;
-
-	/* This is the child extracting the content, hopefully in time */
-
-	output_stream = g_unix_output_stream_new (fd[1], FALSE);
-	dataout_stream = g_data_output_stream_new (output_stream);
-	str = extract_content_text (document, n_bytes);
-	size = (gint64) str->len;
-
-	/* Write the results to the pipe */
-	if (g_data_output_stream_put_int64 (dataout_stream, size, NULL, NULL)) {
-		g_output_stream_write_all (output_stream,
-		                           str->str,
-		                           str->len,
-		                           NULL,
-		                           NULL,
-		                           NULL);
-	}
-
-	g_debug ("Child: Content extraction now finished in child process, "
-	         "written %" G_GSIZE_FORMAT " bytes to parent process",
-	         size);
-
-	g_string_free (str, TRUE);
-	g_object_unref (dataout_stream);
-	g_object_unref (output_stream);
-
-	close (fd[1]);
-
-	exit (0);
-}
-
-static gchar *
-extract_content_parent_process (PopplerDocument *document,
-                                int              fd[2],
-                                pid_t            child_pid)
-{
-	GInputStream *input_stream;
-	GDataInputStream *datain_stream;
-	GString *content = NULL;
-	GError *error = NULL;
-	GTimer *timer = NULL;
-	gsize bytes_expected = -1;
-	gboolean timed_out = FALSE;
-	gboolean finished = FALSE;
-	struct timeval timeout;
-	fd_set rfds;
-
-	/* This is the parent process waiting for the content extractor to
-	 * finish in time. */
-
-	g_debug ("Parent: Content extraction now starting in child process (pid = %d)", child_pid);
-
-	/* Set up gio streams */
-	input_stream = g_unix_input_stream_new (fd[0], FALSE);
-	datain_stream = g_data_input_stream_new (input_stream);
-
-	/* Watch FD to see when it has input. */
-	FD_ZERO(&rfds);
-	FD_SET(fd[0], &rfds);
-
-	/* We give the content extractor 10 seconds to do its job */
-	timeout.tv_sec = EXTRACTION_PROCESS_TIMEOUT;
-	timeout.tv_usec = 0;
-
-	/* We also use our own timer because timeouts in select()
-	 * can be inconsistent across UNIX platforms. Some update the
-	 * timeout and some don't.
-	 */
-	timer = g_timer_new ();
-
-	/* So, this is fairly simple, what we're doing here is using
-	 * select() to know when the child process has written some or
-	 * all the data and we then avoid the child blocking by
-	 * reading from that stream. We couple with this with a
-	 * timeout of 10 seconds so if we receive nothing then we know
-	 * we can kill the process because it is taking too long.
-	 *
-	 * We use waitpid() to know if the process quit because it has
-	 * finished or if it is still processing data and needs to be
-	 * killed.
-	 */
-	while (!finished) {
-		int retval;
-
-		/* 1a. Wait for data on the FD and limit by timeout */
-		retval = select (fd[0] + 1,  &rfds, NULL, NULL, &timeout);
-
-		/* 2. Did we error? Have data? or just timeout? */
-		if (retval == -1) {
-			perror ("select()");
-			finished = TRUE;
-		} else if (retval == 1) {
-			gsize bytes_remaining = bytes_expected;
-			gboolean read_finished = FALSE;
-
-			if (g_timer_elapsed (timer, NULL) >= EXTRACTION_PROCESS_TIMEOUT) {
-				finished = TRUE;
-				timed_out = TRUE;
-				continue;
-			}
-
-			/* 3. Start reading data */
-			if (bytes_expected == -1) {
-				/* We only need to read the size once before the data! */
-				bytes_expected = (gsize) g_data_input_stream_read_int64 (datain_stream,
-				                                                         NULL,
-				                                                         &error);
-				if (error) {
-					g_warning ("Call to g_data_input_stream_read_int64() failed, %s",
-					           error->message);
-					g_error_free (error);
-					finished = TRUE;
-					continue;
-				}
-
-				g_debug ("Parent: Expected bytes to read is %" G_GSSIZE_FORMAT "", bytes_expected);
-				bytes_remaining = bytes_expected;
-				content = g_string_new ("");
-			}
-
-			/* 4. Read until done from stream and concatenate data */
-			while (!read_finished) {
-				gchar buf[BUFFER_SIZE];
-				gsize bytes_read;
-
-				memset (buf, 0, BUFFER_SIZE);
-				bytes_read = g_input_stream_read (G_INPUT_STREAM (datain_stream),
-				                                  buf,
-				                                  MIN (BUFFER_SIZE, bytes_remaining),
-				                                  NULL,
-				                                  &error);
-
-				g_debug ("Parent:   Bytes read is %" G_GSSIZE_FORMAT ","
-				         "bytes remaining is %" G_GSSIZE_FORMAT "",
-				         bytes_read,
-				         MAX (bytes_remaining - bytes_read, 0));
-
-				if (bytes_read == -1 || error) {
-					g_warning ("Call to g_input_stream_read() failed, %s",
-					           error ? error->message : "no error given");
-					g_clear_error (&error);
-					read_finished = TRUE;
-					finished = TRUE;
-				} else {
-					content = g_string_append (content, buf);
-
-					bytes_remaining -= bytes_read;
-					bytes_remaining  = MAX (bytes_remaining, 0);
-
-					if (bytes_read == 0) {
-						/* We finished reading */
-						g_debug ("Parent:   Finished reading all bytes");
-						read_finished = TRUE;
-					}
-
-					/* Are we finished reading everything */
-					if (bytes_remaining < 1) {
-						finished = TRUE;
-					}
-				}
-			}
-		} else {
-			/* 3. We must have timed out with no data in select() */
-			finished = TRUE;
-			timed_out = TRUE;
-			g_debug ("Parent: Must have timed out with no data in select()");
-		}
-	}
-
-	if (timed_out) {
-		g_debug ("Parent: Child process took too long. We waited %d seconds, so we're going to kill it!",
-		         EXTRACTION_PROCESS_TIMEOUT);
-		kill (child_pid, SIGKILL);
-	} else {
-		g_debug ("Parent: Data received in %2.2f seconds (timeout is %d seconds)",
-		         g_timer_elapsed (timer, NULL),
-		         EXTRACTION_PROCESS_TIMEOUT);
-	}
-
-	g_timer_destroy (timer);
-
-	g_object_unref (datain_stream);
-	g_object_unref (input_stream);
-
-	close (fd[0]);
-
-	return content ? g_string_free (content, FALSE) : NULL;
-}
-
-static void
-extract_content_child_cleanup (int action)
-{
-	pid_t child_pid;
-	int status;
-
-	while ((child_pid = waitpid (-1, &status, WNOHANG)) > 0)
-		;
-}
-
-static gchar *
-extract_content (PopplerDocument *document,
-                 gsize            n_bytes)
-{
-	pid_t child_pid;
-	int fd[2];
-	sigset_t mask;
-	sigset_t orig_mask;
-	struct sigaction sa;
-
-	if (pipe (fd) == -1) {
-		g_warning ("Content extraction failed, call to pipe() failed");
-		return NULL;
-	}
-
-	/* Set sig mask before fork() to avoid race conditions */
-	sigemptyset (&mask);
-	sigaddset (&mask, SIGCHLD);
-
-	/* Add zombie handler */
-	sigfillset (&sa.sa_mask);
-	sa.sa_handler = extract_content_child_cleanup;
-	sa.sa_flags = 0;
-	sigaction (SIGCHLD, &sa, NULL);
-
-	if (sigprocmask (SIG_SETMASK, &mask, &orig_mask) == -1) {
-		g_warning ("Content extraction failed, call to sigprocmask() failed");
-		return NULL;
-	}
-
-	child_pid = fork ();
-
-	if (child_pid == -1) {
-		g_warning ("Content extraction failed, call to fork() failed");
-
-		close (fd[0]);
-		close (fd[1]);
-	}
-
-	if (child_pid == 0) {
-		extract_content_child_process (document, n_bytes, fd);
-		return NULL;
-	}
-
-	return extract_content_parent_process (document, fd, child_pid);
+	return g_string_free (string, FALSE);
 }
 
 static void
@@ -557,6 +298,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	GError *error = NULL;
 	TrackerSparqlBuilder *metadata, *preupdate;
 	const gchar *graph;
+	const gchar *urn;
 	TrackerXmpData *xd = NULL;
 	PDFData pd = { 0 }; /* actual data */
 	PDFData md = { 0 }; /* for merging */
@@ -565,7 +307,6 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	gchar *content, *uri;
 	guint n_bytes;
 	GPtrArray *keywords;
-	GString *where;
 	guint i;
 	GFile *file;
 	gchar *filename;
@@ -577,6 +318,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	metadata = tracker_extract_info_get_metadata_builder (info);
 	preupdate = tracker_extract_info_get_preupdate_builder (info);
 	graph = tracker_extract_info_get_graph (info);
+	urn = tracker_extract_info_get_urn (info);
 
 	file = tracker_extract_info_get_file (info);
 	filename = g_file_get_path (file);
@@ -672,9 +414,9 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		pd.creation_date = tracker_date_to_string ((time_t) creation_date);
 	}
 
-	keywords = g_ptr_array_new ();
+	keywords = g_ptr_array_new_with_free_func ((GDestroyNotify) g_free);
 
-	if (xml &&
+	if (xml && *xml &&
 	    (xd = tracker_xmp_new (xml, strlen (xml), uri)) != NULL) {
 		/* The casts here are well understood and known */
 		md.title = (gchar *) tracker_coalesce_strip (4, pd.title, xd->title, xd->title2, xd->pdf_title);
@@ -939,34 +681,22 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		write_pdf_data (pd, metadata, keywords);
 	}
 
-	where = g_string_new ("");
-
 	for (i = 0; i < keywords->len; i++) {
-		gchar *p, *escaped, *var;
+		gchar *escaped, *subject;
+		const gchar *p;
 
 		p = g_ptr_array_index (keywords, i);
 		escaped = tracker_sparql_escape_string (p);
-		var = g_strdup_printf ("tag%d", i + 1);
+		subject = g_strdup_printf ("_:tag%d", i + 1);
 
 		/* ensure tag with specified label exists */
-		tracker_sparql_builder_append (preupdate, "INSERT { ");
-
-		if (graph) {
-			tracker_sparql_builder_append (preupdate, "GRAPH <");
-			tracker_sparql_builder_append (preupdate, graph);
-			tracker_sparql_builder_append (preupdate, "> { ");
-		}
-
-		tracker_sparql_builder_append (preupdate,
-		                               "_:tag a nao:Tag ; nao:prefLabel \"");
-		tracker_sparql_builder_append (preupdate, escaped);
-		tracker_sparql_builder_append (preupdate, "\"");
-
-		if (graph) {
-			tracker_sparql_builder_append (preupdate, " } ");
-		}
-
-		tracker_sparql_builder_append (preupdate, " }\n");
+		tracker_sparql_builder_insert_open (preupdate, graph);
+		tracker_sparql_builder_subject (preupdate, subject);
+		tracker_sparql_builder_predicate (preupdate, "a");
+		tracker_sparql_builder_object (preupdate, "nao:Tag");
+		tracker_sparql_builder_predicate (preupdate, "nao:prefLabel");
+		tracker_sparql_builder_object_unvalidated (preupdate, escaped);
+		tracker_sparql_builder_insert_close (preupdate);
 		tracker_sparql_builder_append (preupdate,
 		                               "WHERE { FILTER (NOT EXISTS { "
 		                               "?tag a nao:Tag ; nao:prefLabel \"");
@@ -975,26 +705,30 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		                               "\" }) }\n");
 
 		/* associate file with tag */
-		tracker_sparql_builder_predicate (metadata, "nao:hasTag");
-		tracker_sparql_builder_object_variable (metadata, var);
+		tracker_sparql_builder_insert_open (preupdate, graph);
+		tracker_sparql_builder_subject_iri (preupdate, urn);
+		tracker_sparql_builder_predicate (preupdate, "nao:hasTag");
+		tracker_sparql_builder_object (preupdate, "?tag");
+		tracker_sparql_builder_insert_close (preupdate);
+		tracker_sparql_builder_where_open (preupdate);
+		tracker_sparql_builder_subject (preupdate, "?tag");
+		tracker_sparql_builder_predicate (preupdate, "a");
+		tracker_sparql_builder_object (preupdate, "nao:Tag");
+		tracker_sparql_builder_predicate (preupdate, "nao:prefLabel");
+		tracker_sparql_builder_object_unvalidated (preupdate, escaped);
+		tracker_sparql_builder_where_close (preupdate);
 
-		g_string_append_printf (where, "?%s a nao:Tag ; nao:prefLabel \"%s\" .\n", var, escaped);
-
-		g_free (var);
+		g_free (subject);
 		g_free (escaped);
-		g_free (p);
 	}
 	g_ptr_array_free (keywords, TRUE);
-
-	tracker_extract_info_set_where_clause (info, where->str);
-	g_string_free (where, TRUE);
 
 	tracker_sparql_builder_predicate (metadata, "nfo:pageCount");
 	tracker_sparql_builder_object_int64 (metadata, poppler_document_get_n_pages (document));
 
 	config = tracker_main_get_config ();
 	n_bytes = tracker_config_get_max_bytes (config);
-	content = extract_content (document, n_bytes);
+	content = extract_content_text (document, n_bytes);
 
 	if (content) {
 		tracker_sparql_builder_predicate (metadata, "nie:plainTextContent");

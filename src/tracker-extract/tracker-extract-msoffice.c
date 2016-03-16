@@ -25,7 +25,6 @@
 #include <string.h>
 
 #include <glib.h>
-
 #include <gsf/gsf.h>
 #include <gsf/gsf-doc-meta-data.h>
 #include <gsf/gsf-infile.h>
@@ -35,10 +34,7 @@
 #include <gsf/gsf-utils.h>
 #include <gsf/gsf-infile-zip.h>
 
-#include <libtracker-common/tracker-utils.h>
-#include <libtracker-common/tracker-file-utils.h>
-#include <libtracker-common/tracker-os-dependant.h>
-
+#include <libtracker-common/tracker-common.h>
 #include <libtracker-extract/tracker-extract.h>
 
 #include "tracker-main.h"
@@ -763,7 +759,8 @@ open_file (const gchar *filename, FILE *file)
 	infile = gsf_infile_msole_new (input, &error);
 
 	if (error) {
-		g_warning ("Failed to open file: %s", error->message);
+		if (error->domain != gsf_input_error_id ())
+			g_warning ("Failed to open file '%s': %s", filename, error->message);
 		g_error_free (error);
 	}
 
@@ -1376,6 +1373,7 @@ xls_get_extended_record_string (GsfInput  *stream,
 		/* Go to next chunk */
 		i++;
 	}
+	g_free(buffer);
 }
 
 /**

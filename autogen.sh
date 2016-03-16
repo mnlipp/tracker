@@ -1,55 +1,60 @@
 #!/bin/sh
 # Run this to generate all the initial makefiles, etc.
-#
-# NOTE: compare_versions() is stolen from gnome-autogen.sh
 
-REQUIRED_VALA_VERSION=0.18.0
+srcdir=`dirname $0`
+test -z "$srcdir" && srcdir=.
 
-# Usage:
-#     compare_versions MIN_VERSION ACTUAL_VERSION
-# returns true if ACTUAL_VERSION >= MIN_VERSION
-compare_versions() {
-    ch_min_version=$1
-    ch_actual_version=$2
-    ch_status=0
-    IFS="${IFS=         }"; ch_save_IFS="$IFS"; IFS="."
-    set $ch_actual_version
-    for ch_min in $ch_min_version; do
-        ch_cur=`echo $1 | sed 's/[^0-9].*$//'`; shift # remove letter suffixes
-        if [ -z "$ch_min" ]; then break; fi
-        if [ -z "$ch_cur" ]; then ch_status=1; break; fi
-        if [ $ch_cur -gt $ch_min ]; then break; fi
-        if [ $ch_cur -lt $ch_min ]; then ch_status=1; break; fi
-    done
-    IFS="$ch_save_IFS"
-    return $ch_status
+PKG_NAME="tracker"
+
+(test -f $srcdir/configure.ac \
+  && test -f $srcdir/autogen.sh) || {
+    echo -n "**Error**: Directory "\`$srcdir\'" does not look like the"
+    echo " top-level $PKG_NAME directory"
+    exit 1
 }
 
-# Vala version check
-test -z "$VALAC" && VALAC=valac
-VALA_VERSION=`$VALAC --version | cut -d" " -f2`
+DIE=0
 
-if [ -z "$VALA_VERSION" ]; then
-    echo "**Error**: valac not installed or broken. You must have valac >= $REQUIRED_VALA_VERSION"
-    echo "installed to build."
-    exit 1
+if ! which gnome-autogen.sh ; then
+  echo "You need to install the gnome-common module and make"
+  echo "sure the gnome-autogen.sh script is in your \$PATH."
+  exit 1
 fi
 
-echo "Found Vala $VALA_VERSION"
+# If no arguments are given, use those used with distcheck
+# equally, use the JHBuild prefix if it is available otherwise fall
+# back to the default (/usr/local)
+if [ $# -eq 0 ] ; then
+  echo "Using distcheck arguments, none were supplied..."
 
-if ! compare_versions $REQUIRED_VALA_VERSION $VALA_VERSION; then
-    echo "**Error**: You must have valac >= $REQUIRED_VALA_VERSION installed to build, you have $VALA_VERSION"
-    exit 1
+  if test -n "$JHBUILD_PREFIX" ; then
+    echo "Using JHBuild prefix ('$JHBUILD_PREFIX')"
+    NEW_PREFIX="--prefix $JHBUILD_PREFIX --with-bash-completion-dir=$JHBUILD_PREFIX/share/bash-completion/completions"
+  fi
+
+  NEW_ARGS="\
+	--disable-nautilus-extension \
+	--enable-unit-tests \
+	--enable-functional-tests \
+	--enable-gtk-doc \
+	--enable-introspection \
+	--disable-miner-rss \
+	--disable-miner-evolution \
+	--disable-miner-thunderbird \
+	--disable-miner-firefox \
+	--enable-poppler \
+	--enable-exempi \
+	--enable-libiptcdata \
+	--enable-libjpeg \
+	--enable-libtiff \
+	--enable-libvorbis \
+	--enable-libflac \
+	--enable-libgsf \
+	--enable-playlist \
+	--enable-tracker-preferences \
+	--enable-enca"
+
+  set -- $NEW_PREFIX $NEW_ARGS
 fi
 
-# Generate required files
-test -n "$srcdir" || srcdir=`dirname "$0"`
-test -n "$srcdir" || srcdir=.
-(
-  cd "$srcdir" &&
-  touch ChangeLog && # Automake requires that ChangeLog exist
-  gtkdocize --flavour no-tmpl &&
-  autopoint --force &&
-  AUTOPOINT='intltoolize --automake --copy' autoreconf --verbose --force --install
-) || exit
-test -n "$NOCONFIGURE" || "$srcdir/configure" "$@"
+. gnome-autogen.sh

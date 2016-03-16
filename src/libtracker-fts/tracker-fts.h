@@ -19,15 +19,17 @@
  * 02110-1301  USA
  */
 
-#ifndef __TRACKER_FTS_H__
-#define __TRACKER_FTS_H__
+#ifndef __LIBTRACKER_FTS_FTS_H__
+#define __LIBTRACKER_FTS_FTS_H__
 
 #include <sqlite3.h>
-#include <glib-object.h>
+
+#include <glib.h>
 
 G_BEGIN_DECLS
 
 gboolean    tracker_fts_init             (void);
+gboolean    tracker_fts_shutdown         (void);
 gboolean    tracker_fts_init_db          (sqlite3    *db,
                                           GHashTable *tables);
 gboolean    tracker_fts_create_table     (sqlite3    *db,
@@ -38,9 +40,10 @@ gboolean    tracker_fts_alter_table      (sqlite3    *db,
                                           gchar      *table_name,
                                           GHashTable *tables,
                                           GHashTable *grouped_columns);
-
+void        tracker_fts_rebuild_tokens   (sqlite3     *db,
+                                          const gchar *table_name);
 
 G_END_DECLS
 
-#endif /* __TRACKER_FTS_H__ */
+#endif /* __LIBTRACKER_FTS_FTS_H__ */
 

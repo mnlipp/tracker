@@ -142,9 +142,9 @@ tracker_thumbnailer_initable_init (GInitable     *initable,
 	private->request_id = 1;
 	private->service_is_available = FALSE;
 
-	g_message ("Thumbnailer connections being set up...");
+	g_message ("Thumbnailer connections being set up... (using same bus as Tracker, i.e. session or system)");
 
-	private->connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, error);
+	private->connection = g_bus_get_sync (TRACKER_IPC_BUS, NULL, error);
 
 	if (!private->connection)
 		return FALSE;
@@ -220,6 +220,7 @@ tracker_thumbnailer_initable_init (GInitable     *initable,
 			i = 0;
 			while (g_hash_table_iter_next (&iter, &key, &value)) {
 				private->supported_mime_types[i] = g_strdup (key);
+				g_debug ("  %s", (gchar *) key);
 				i++;
 			}
 
@@ -256,6 +257,21 @@ tracker_thumbnailer_init (TrackerThumbnailer *thumbnailer)
 {
 }
 
+/**
+ * tracker_thumbnailer_new:
+ *
+ * Creates a new #TrackerThumbnailer object that can be used to signal
+ * the system's thumbnailing daemon(s) via D-Bus to add or remove
+ * content that needs thumbnailing.
+ *
+ * For example, when mounting a USB thumb drive, content may not have
+ * thumbnails and this object allows the content of that thumb drive
+ * to be queued for processing.
+ *
+ * Returns: %TRUE if successfully stored to be reported, %FALSE otherwise.
+ *
+ * Since: 0.18.
+ */
 TrackerThumbnailer *
 tracker_thumbnailer_new (void)
 {
@@ -292,10 +308,14 @@ tracker_thumbnailer_move_add (TrackerThumbnailer *thumbnailer,
 	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
+		g_debug ("%s: Not thumbnailing ‘%s’ as service is unavailable.",
+		         G_STRFUNC, from_uri);
 		return FALSE;
 	}
 
 	if (mime_type && !should_be_thumbnailed (private->supported_mime_types, mime_type)) {
+		g_debug ("%s: Not thumbnailing ‘%s’ as MIME type ‘%s’ should "
+		         "not be thumbnailed.", G_STRFUNC, from_uri, mime_type);
 		return FALSE;
 	}
 
@@ -336,10 +356,14 @@ tracker_thumbnailer_remove_add (TrackerThumbnailer *thumbnailer,
 	private = tracker_thumbnailer_get_instance_private (thumbnailer);
 
 	if (!private->service_is_available) {
+		g_debug ("%s: Not thumbnailing ‘%s’ as service is unavailable.",
+		         G_STRFUNC, uri);
 		return FALSE;
 	}
 
 	if (mime_type && !should_be_thumbnailed (private->supported_mime_types, mime_type)) {
+		g_debug ("%s: Not thumbnailing ‘%s’ as MIME type ‘%s’ should "
+		         "not be thumbnailed.", G_STRFUNC, uri, mime_type);
 		return FALSE;
 	}
 

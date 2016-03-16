@@ -40,8 +40,9 @@ typedef struct _FindNodeData FindNodeData;
 struct _NodeData
 {
 	GFile *file;
-	guint flags : 7;
+	guint flags;
 	guint shallow : 1;
+	guint removing : 1;
 };
 
 struct _PatternData
@@ -64,11 +65,13 @@ struct _TrackerIndexingTreePrivate
 	GList *filter_patterns;
 	TrackerFilterPolicy policies[TRACKER_FILTER_PARENT_DIRECTORY + 1];
 
+	GFile *root;
 	guint filter_hidden : 1;
 };
 
 enum {
 	PROP_0,
+	PROP_ROOT,
 	PROP_FILTER_HIDDEN
 };
 
@@ -87,10 +90,9 @@ node_data_new (GFile *file,
 {
 	NodeData *data;
 
-	data = g_slice_new (NodeData);
+	data = g_slice_new0 (NodeData);
 	data->file = g_object_ref (file);
 	data->flags = flags;
-	data->shallow = FALSE;
 
 	return data;
 }
@@ -149,6 +151,9 @@ tracker_indexing_tree_get_property (GObject    *object,
 	priv = TRACKER_INDEXING_TREE (object)->priv;
 
 	switch (prop_id) {
+	case PROP_ROOT:
+		g_value_set_object (value, priv->root);
+		break;
 	case PROP_FILTER_HIDDEN:
 		g_value_set_boolean (value, priv->filter_hidden);
 		break;
@@ -165,10 +170,15 @@ tracker_indexing_tree_set_property (GObject      *object,
                                     GParamSpec   *pspec)
 {
 	TrackerIndexingTree *tree;
+	TrackerIndexingTreePrivate *priv;
 
 	tree = TRACKER_INDEXING_TREE (object);
+	priv = tree->priv;
 
 	switch (prop_id) {
+	case PROP_ROOT:
+		priv->root = g_value_dup_object (value);
+		break;
 	case PROP_FILTER_HIDDEN:
 		tracker_indexing_tree_set_filter_hidden (tree,
 		                                         g_value_get_boolean (value));
@@ -177,6 +187,29 @@ tracker_indexing_tree_set_property (GObject      *object,
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
 	}
+}
+
+static void
+tracker_indexing_tree_constructed (GObject *object)
+{
+	TrackerIndexingTree *tree;
+	TrackerIndexingTreePrivate *priv;
+	NodeData *data;
+
+	G_OBJECT_CLASS (tracker_indexing_tree_parent_class)->constructed (object);
+
+	tree = TRACKER_INDEXING_TREE (object);
+	priv = tree->priv;
+
+	/* Add a shallow root node */
+	if (priv->root == NULL) {
+		priv->root = g_file_new_for_uri ("file:///");
+	}
+
+	data = node_data_new (priv->root, 0);
+	data->shallow = TRUE;
+
+	priv->config_tree = g_node_new (data);
 }
 
 static void
@@ -199,6 +232,10 @@ tracker_indexing_tree_finalize (GObject *object)
 	                 NULL);
 	g_node_destroy (priv->config_tree);
 
+	if (priv->root) {
+		g_object_unref (priv->root);
+	}
+
 	G_OBJECT_CLASS (tracker_indexing_tree_parent_class)->finalize (object);
 }
 
@@ -208,8 +245,17 @@ tracker_indexing_tree_class_init (TrackerIndexingTreeClass *klass)
 	GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
 	object_class->finalize = tracker_indexing_tree_finalize;
+	object_class->constructed = tracker_indexing_tree_constructed;
 	object_class->set_property = tracker_indexing_tree_set_property;
 	object_class->get_property = tracker_indexing_tree_get_property;
+
+	g_object_class_install_property (object_class,
+	                                 PROP_ROOT,
+	                                 g_param_spec_object ("root",
+	                                                      "Root URL",
+	                                                      "The root GFile for the indexing tree",
+	                                                      G_TYPE_FILE,
+	                                                      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
 	g_object_class_install_property (object_class,
 	                                 PROP_FILTER_HIDDEN,
@@ -218,6 +264,19 @@ tracker_indexing_tree_class_init (TrackerIndexingTreeClass *klass)
 	                                                       "Whether hidden resources are filtered",
 	                                                       FALSE,
 	                                                       G_PARAM_READWRITE));
+	/**
+	 * TrackerIndexingTree::directory-added:
+	 * @indexing_tree: a #TrackerIndexingTree
+	 * @directory: a #GFile
+	 *
+	 * the ::directory-added signal is emitted when a new
+	 * directory is added to the list of other directories which
+	 * are to be considered for indexing. Typically this is
+	 * signalled when the tracker_indexing_tree_add() API is
+	 * called.
+	 *
+	 * Since: 0.14.0
+	 **/
 	signals[DIRECTORY_ADDED] =
 		g_signal_new ("directory-added",
 		              G_OBJECT_CLASS_TYPE (object_class),
@@ -227,6 +286,20 @@ tracker_indexing_tree_class_init (TrackerIndexingTreeClass *klass)
 		              NULL, NULL,
 		              NULL,
 		              G_TYPE_NONE, 1, G_TYPE_FILE);
+
+	/**
+	 * TrackerIndexingTree::directory-removed:
+	 * @indexing_tree: a #TrackerIndexingTree
+	 * @directory: a #GFile
+	 *
+	 * the ::directory-removed signal is emitted when a
+	 * directory is removed from the list of other directories
+	 * which are to be considered for indexing. Typically this is
+	 * signalled when the tracker_indexing_tree_remove() API is
+	 * called.
+	 *
+	 * Since: 0.14.0
+	 **/
 	signals[DIRECTORY_REMOVED] =
 		g_signal_new ("directory-removed",
 		              G_OBJECT_CLASS_TYPE (object_class),
@@ -236,6 +309,20 @@ tracker_indexing_tree_class_init (TrackerIndexingTreeClass *klass)
 		              NULL, NULL,
 		              NULL,
 		              G_TYPE_NONE, 1, G_TYPE_FILE);
+
+	/**
+	 * TrackerIndexingTree::directory-updated:
+	 * @indexing_tree: a #TrackerIndexingTree
+	 * @directory: a #GFile
+	 *
+	 * the ::directory-updated signal is emitted when @directory
+	 * that was previously added has had its indexing flags
+	 * updated due to another directory that is a parent of
+	 * @directory changing. This tends to happen uppon
+	 * tracker_indexing_tree_add() API calls.
+	 *
+	 * Since: 0.14.0
+	 **/
 	signals[DIRECTORY_UPDATED] =
 		g_signal_new ("directory-updated",
 		              G_OBJECT_CLASS_TYPE (object_class),
@@ -254,20 +341,11 @@ static void
 tracker_indexing_tree_init (TrackerIndexingTree *tree)
 {
 	TrackerIndexingTreePrivate *priv;
-	NodeData *data;
-	GFile *root;
 	gint i;
 
 	priv = tree->priv = G_TYPE_INSTANCE_GET_PRIVATE (tree,
 	                                                 TRACKER_TYPE_INDEXING_TREE,
 	                                                 TrackerIndexingTreePrivate);
-	/* Add a shallow root node */
-	root = g_file_new_for_uri ("file:///");
-	data = node_data_new (root, 0);
-	data->shallow = TRUE;
-
-	priv->config_tree = g_node_new (data);
-	g_object_unref (root);
 
 	for (i = TRACKER_FILTER_FILE; i <= TRACKER_FILTER_PARENT_DIRECTORY; i++) {
 		priv->policies[i] = TRACKER_FILTER_POLICY_ACCEPT;
@@ -280,11 +358,33 @@ tracker_indexing_tree_init (TrackerIndexingTree *tree)
  * Returns a newly created #TrackerIndexingTree
  *
  * Returns: a newly allocated #TrackerIndexingTree
+ *
+ * Since: 0.14.0
  **/
 TrackerIndexingTree *
 tracker_indexing_tree_new (void)
 {
 	return g_object_new (TRACKER_TYPE_INDEXING_TREE, NULL);
+}
+
+/**
+ * tracker_indexing_tree_new_with_root:
+ * @root: The top level URL
+ *
+ * If @root is %NULL, the default value is 'file:///'. Using %NULL
+ * here is the equivalent to calling tracker_indexing_tree_new() which
+ * takes no @root argument.
+ *
+ * Returns: a newly allocated #TrackerIndexingTree
+ *
+ * Since: 1.2.2
+ **/
+TrackerIndexingTree *
+tracker_indexing_tree_new_with_root (GFile *root)
+{
+	return g_object_new (TRACKER_TYPE_INDEXING_TREE,
+	                     "root", root,
+	                     NULL);
 }
 
 #ifdef PRINT_INDEXING_TREE
@@ -467,6 +567,12 @@ tracker_indexing_tree_remove (TrackerIndexingTree *tree,
 
 	data = node->data;
 
+	if (data->removing) {
+		return;
+	}
+
+	data->removing = TRUE;
+
 	if (!node->parent) {
 		/* Node is the config tree
 		 * root, mark as shallow again
@@ -553,7 +659,7 @@ tracker_indexing_tree_clear_filters (TrackerIndexingTree *tree,
  *
  * Returns %TRUE if @file matches any filter of the given filter type.
  *
- * Returns: %TRUE if @file is filtered
+ * Returns: %TRUE if @file is filtered.
  **/
 gboolean
 tracker_indexing_tree_file_matches_filter (TrackerIndexingTree *tree,
@@ -658,24 +764,37 @@ tracker_indexing_tree_file_is_indexable (TrackerIndexingTree *tree,
 	g_return_val_if_fail (TRACKER_IS_INDEXING_TREE (tree), FALSE);
 	g_return_val_if_fail (G_IS_FILE (file), FALSE);
 
-	if (file_type == G_FILE_TYPE_UNKNOWN)
-		file_type = g_file_query_file_type (file,
-		                                    G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,
-		                                    NULL);
-
-	filter = (file_type == G_FILE_TYPE_DIRECTORY) ?
-		TRACKER_FILTER_DIRECTORY : TRACKER_FILTER_FILE;
-
-	if (indexing_tree_file_is_filtered (tree, filter, file)) {
-		return FALSE;
-	}
-
-	config_file = tracker_indexing_tree_get_root (tree,file, &config_flags);
+	config_file = tracker_indexing_tree_get_root (tree, file, &config_flags);
 	if (!config_file) {
 		/* Not under an added dir */
 		return FALSE;
 	}
 
+	/* Don't check file type if _NO_STAT is given in flags */
+	if (file_type == G_FILE_TYPE_UNKNOWN &&
+	    (config_flags & TRACKER_DIRECTORY_FLAG_NO_STAT) != 0) {
+		GFileQueryInfoFlags file_flags;
+
+		file_flags = G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS;
+
+		file_type = g_file_query_file_type (file, file_flags, NULL);
+
+		filter = (file_type == G_FILE_TYPE_DIRECTORY) ?
+			TRACKER_FILTER_DIRECTORY : TRACKER_FILTER_FILE;
+
+		if (indexing_tree_file_is_filtered (tree, filter, file)) {
+			return FALSE;
+		}
+	} else if (file_type != G_FILE_TYPE_UNKNOWN) {
+		filter = (file_type == G_FILE_TYPE_DIRECTORY) ?
+			TRACKER_FILTER_DIRECTORY : TRACKER_FILTER_FILE;
+
+		if (indexing_tree_file_is_filtered (tree, filter, file)) {
+			return FALSE;
+		}
+	}
+
+	/* FIXME: Shouldn't we only do this for file_type == G_FILE_TYPE_DIRECTORY ? */
 	if (config_flags & TRACKER_DIRECTORY_FLAG_IGNORE) {
 		return FALSE;
 	}
@@ -732,6 +851,17 @@ tracker_indexing_tree_parent_is_indexable (TrackerIndexingTree *tree,
 	return TRUE;
 }
 
+/**
+ * tracker_indexing_tree_get_filter_hidden:
+ * @tree: a #TrackerIndexingTree
+ *
+ * Describes if the @tree should index hidden content. To change this
+ * setting, see tracker_indexing_tree_set_filter_hidden().
+ *
+ * Returns: %FALSE if hidden files are indexed, otherwise %TRUE.
+ *
+ * Since: 0.18.
+ **/
 gboolean
 tracker_indexing_tree_get_filter_hidden (TrackerIndexingTree *tree)
 {
@@ -743,6 +873,22 @@ tracker_indexing_tree_get_filter_hidden (TrackerIndexingTree *tree)
 	return priv->filter_hidden;
 }
 
+/**
+ * tracker_indexing_tree_set_filter_hidden:
+ * @tree: a #TrackerIndexingTree
+ * @filter_hidden: a boolean
+ *
+ * When indexing content, sometimes it is preferable to ignore hidden
+ * content, for example, files prefixed with &quot;.&quot;. This is
+ * common for files in a home directory which are usually config
+ * files.
+ *
+ * Sets the indexing policy for @tree with hidden files and content.
+ * To ignore hidden files, @filter_hidden should be %TRUE, otherwise
+ * %FALSE.
+ *
+ * Since: 0.18.
+ **/
 void
 tracker_indexing_tree_set_filter_hidden (TrackerIndexingTree *tree,
                                          gboolean             filter_hidden)
@@ -757,6 +903,21 @@ tracker_indexing_tree_set_filter_hidden (TrackerIndexingTree *tree,
 	g_object_notify (G_OBJECT (tree), "filter-hidden");
 }
 
+/**
+ * tracker_indexing_tree_set_default_policy:
+ * @tree: a #TrackerIndexingTree
+ * @filter: a #TrackerFilterType
+ * @policy: a #TrackerFilterPolicy
+ *
+ * Set the default @policy (to allow or deny) for content in @tree
+ * based on the type - in this case @filter. Here, @filter is a file
+ * or directory and there are some other options too.
+ *
+ * For example, you can (by default), disable indexing all directories
+ * using this function.
+ *
+ * Since: 0.18.
+ **/
 void
 tracker_indexing_tree_set_default_policy (TrackerIndexingTree *tree,
                                           TrackerFilterType    filter,
@@ -771,6 +932,22 @@ tracker_indexing_tree_set_default_policy (TrackerIndexingTree *tree,
 	priv->policies[filter] = policy;
 }
 
+/**
+ * tracker_indexing_tree_get_default_policy:
+ * @tree: a #TrackerIndexingTree
+ * @filter: a #TrackerFilterType
+ *
+ * Get the default filtering policies for @tree when indexing content.
+ * Some content is black listed or white listed and the default policy
+ * for that is returned here. The @filter allows specific type of
+ * policies to be returned, for example, the default policy for files
+ * (#TRACKER_FILTER_FILE).
+ *
+ * Returns: Either #TRACKER_FILTER_POLICY_DENY or
+ * #TRACKER_FILTER_POLICY_ALLOW.
+ *
+ * Since: 0.18.
+ **/
 TrackerFilterPolicy
 tracker_indexing_tree_get_default_policy (TrackerIndexingTree *tree,
                                           TrackerFilterType    filter)
@@ -840,6 +1017,64 @@ tracker_indexing_tree_get_root (TrackerIndexingTree   *tree,
 	return NULL;
 }
 
+/**
+ * tracker_indexing_tree_get_master_root:
+ * @tree: a #TrackerIndexingTree
+ *
+ * Returns the #GFile that represents the master root location for all
+ * indexing locations. For example, if
+ * <filename>file:///etc</filename> is an indexed path and so was
+ * <filename>file:///home/user</filename>, the master root is
+ * <filename>file:///</filename>. Only one scheme per @tree can be
+ * used, so you can not mix <filename>http</filename> and
+ * <filename>file</filename> roots in @tree.
+ *
+ * The return value should <emphasis>NEVER</emphasis> be %NULL. In
+ * cases where no root is given, we fallback to
+ * <filename>file:///</filename>.
+ *
+ * Roots explained:
+ *
+ * - master root = top most level root node,
+ *   e.g. file:///
+ *
+ * - config root = a root node from GSettings,
+ *   e.g. file:///home/martyn/Documents
+ *
+ * - root = ANY root, normally config root, but it can also apply to
+ *   roots added for devices, which technically are not a config root or a
+ *   master root.
+ *
+ * Returns: (transfer none): the effective root for all locations, or
+ * %NULL on error. The root is owned by @tree and should not be freed.
+ * It can be referenced using g_object_ref().
+ *
+ * Since: 1.2.
+ **/
+GFile *
+tracker_indexing_tree_get_master_root (TrackerIndexingTree *tree)
+{
+	TrackerIndexingTreePrivate *priv;
+
+	g_return_val_if_fail (TRACKER_IS_INDEXING_TREE (tree), NULL);
+
+	priv = tree->priv;
+
+	return priv->root;
+}
+
+/**
+ * tracker_indexing_tree_file_is_root:
+ * @tree: a #TrackerIndexingTree
+ * @file: a #GFile to compare
+ *
+ * Evaluates if the URL represented by @file is the same of that for
+ * the root of the @tree.
+ *
+ * Returns: %TRUE if @file matches the URL canonically, otherwise %FALSE.
+ *
+ * Since: 1.2.
+ **/
 gboolean
 tracker_indexing_tree_file_is_root (TrackerIndexingTree *tree,
                                     GFile               *file)

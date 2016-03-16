@@ -22,8 +22,8 @@ Test that the threads in the daemon are working:
  A very long query shouldn't block smaller queries.
 """
 import os, dbus
-import gobject
-import glib
+from gi.repository import GObject
+from gi.repository import GLib
 import time
 from dbus.mainloop.glib import DBusGMainLoop
 
@@ -46,7 +46,7 @@ class TestThreadedStore (CommonTrackerStoreTest):
     Reported in bug NB#183499
     """
     def setUp (self):
-        self.main_loop = gobject.MainLoop ()
+        self.main_loop = GObject.MainLoop ()
         self.simple_queries_counter = AMOUNT_SIMPLE_QUERIES
         self.simple_queries_answers = 0
 
@@ -63,8 +63,8 @@ class TestThreadedStore (CommonTrackerStoreTest):
                          "016-nco_ContactIM.ttl"]:
             full_path = os.path.abspath(os.path.join ("ttl", ttl_file))
             print full_path
-            self.tracker.get_tracker_iface ().Load ("file://" + full_path,
-                                                        timeout=30000)
+            self.tracker.get_tracker_iface().Load(
+                '(s)', "file://" + full_path, timeout=30000)
 
     def test_complex_query (self):
         start = time.time ()
@@ -97,28 +97,30 @@ class TestThreadedStore (CommonTrackerStoreTest):
         # Standard timeout
         print "Send complex query"
         self.complex_start = time.time ()
-        self.tracker.get_tracker_iface ().SparqlQuery (COMPLEX_QUERY, timeout=COMPLEX_QUERY_TIMEOUT,
-                                                       reply_handler=self.reply_complex,
-                                                       error_handler=self.error_handler_complex)
+        self.tracker.query(
+            COMPLEX_QUERY, timeout=COMPLEX_QUERY_TIMEOUT,
+            response_handler=self.reply_complex,
+            error_handler=self.error_handler_complex)
 
-        self.timeout_id = glib.timeout_add_seconds (MAX_TEST_TIME, self.__timeout_on_idle)
-        glib.timeout_add_seconds (SIMPLE_QUERY_FREQ, self.__simple_query)
+        self.timeout_id = GLib.timeout_add_seconds (MAX_TEST_TIME, self.__timeout_on_idle)
+        GLib.timeout_add_seconds (SIMPLE_QUERY_FREQ, self.__simple_query)
         self.main_loop.run ()
 
     def __simple_query (self):
         print "Send simple query (%d)" % (self.simple_queries_counter)
         SIMPLE_QUERY = "SELECT ?name WHERE { ?u a nco:PersonContact; nco:fullname ?name. }"
-        self.tracker.get_tracker_iface ().SparqlQuery (SIMPLE_QUERY,
-                                                       timeout=10000,
-                                                       reply_handler=self.reply_simple,
-                                                       error_handler=self.error_handler)
+        self.tracker.query(
+            SIMPLE_QUERY,
+            timeout=10000,
+            response_handler=self.reply_simple,
+            error_handler=self.error_handler)
         self.simple_queries_counter -= 1
         if (self.simple_queries_counter == 0):
             print "Stop sending queries (wait)"
             return False
         return True
 
-    def reply_simple (self, results):
+    def reply_simple (self, obj, results, data):
         print "Simple query answered"
         self.assertNotEquals (len (results), 0)
         self.simple_queries_answers += 1
@@ -126,7 +128,7 @@ class TestThreadedStore (CommonTrackerStoreTest):
             print "All simple queries answered"
             self.main_loop.quit ()
 
-    def reply_complex (self, results):
+    def reply_complex (self, obj, results, data):
         print "Complex query: %.3f" % (time.time () - self.complex_start)
 
     def error_handler (self, error_msg):

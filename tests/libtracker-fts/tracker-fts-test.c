@@ -25,13 +25,8 @@
 #include <glib/gstdio.h>
 #include <gio/gio.h>
 
-#include <libtracker-common/tracker-ontologies.h>
-
-#include <libtracker-data/tracker-data-manager.h>
-#include <libtracker-data/tracker-data-query.h>
-#include <libtracker-data/tracker-data-update.h>
 #include <libtracker-data/tracker-data.h>
-#include <libtracker-data/tracker-sparql-query.h>
+#include <libtracker-sparql/tracker-sparql.h>
 
 typedef struct _TestInfo TestInfo;
 
@@ -187,7 +182,7 @@ main (int argc, char **argv)
 
 	g_setenv ("XDG_DATA_HOME", current_dir, TRUE);
 	g_setenv ("XDG_CACHE_HOME", current_dir, TRUE);
-	g_setenv ("TRACKER_DB_ONTOLOGIES_DIR", TOP_SRCDIR "/data/ontologies/", TRUE);
+	g_setenv ("TRACKER_DB_ONTOLOGIES_DIR", TOP_SRCDIR "/src/ontologies/", TRUE);
 	g_setenv ("TRACKER_FTS_STOP_WORDS", "0", TRUE);
 
 	g_free (current_dir);

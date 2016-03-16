@@ -21,8 +21,6 @@
 
 #include "config.h"
 
-#define _GNU_SOURCE
-
 #include <unistd.h>
 #include <sys/types.h>
 #include <stdio.h>
@@ -39,8 +37,7 @@
 # define O_LARGEFILE 0
 #endif
 
-#include <libtracker-common/tracker-crc32.h>
-
+#include "tracker-crc32.h"
 #include "tracker-db-journal.h"
 
 #ifndef DISABLE_JOURNAL
@@ -121,6 +118,17 @@ static JournalWriter ontology_writer = {0};
 static TransactionFormat current_transaction_format;
 
 static gboolean tracker_db_journal_rotate (GError **error);
+
+#ifndef HAVE_STRNLEN
+
+size_t
+strnlen (const char *str, size_t max)
+{
+	const char *end = memchr (str, 0, max);
+	return end ? (size_t)(end - str) : max;
+}
+
+#endif /* HAVE_STRNLEN */
 
 static gboolean
 journal_eof (JournalReader *jreader)

@@ -1,1 +1,5 @@
 tracker-writeback
+*.service
+*.xml
+*.valid
+*.cfg.5

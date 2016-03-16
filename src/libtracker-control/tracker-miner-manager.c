@@ -24,14 +24,14 @@
 
 #include <libtracker-common/tracker-dbus.h>
 #include <libtracker-common/tracker-type-utils.h>
-#include <libtracker-miner/tracker-miner-dbus.h>
+#include <libtracker-miner/tracker-miner.h>
 
 #include "tracker-miner-manager.h"
 
 /**
  * SECTION:tracker-miner-manager
  * @short_description: External control and monitoring of miners
- * @include: libtracker-miner/tracker-miner.h
+ * @include: libtracker-control/tracker-control.h
  *
  * #TrackerMinerManager keeps track of available miners, their current
  * progress/status, and also allows basic external control on them, such
@@ -40,10 +40,10 @@
 
 #define TRACKER_MINER_MANAGER_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), TRACKER_TYPE_MINER_MANAGER, TrackerMinerManagerPrivate))
 
-#define DESKTOP_ENTRY_GROUP "Desktop Entry"
-#define DBUS_NAME_KEY "DBusName"
-#define DBUS_PATH_KEY "DBusPath"
-#define DISPLAY_NAME_KEY "Name"
+#define DESKTOP_ENTRY_GROUP "D-BUS Service"
+#define DBUS_NAME_KEY "Name"
+#define DBUS_PATH_KEY "Path"
+#define DISPLAY_NAME_KEY "DisplayName"
 #define DESCRIPTION_KEY "Comment"
 
 typedef struct TrackerMinerManagerPrivate TrackerMinerManagerPrivate;
@@ -404,7 +404,7 @@ miner_manager_initable_init (GInitable     *initable,
 	manager = TRACKER_MINER_MANAGER (initable);
 	priv = TRACKER_MINER_MANAGER_GET_PRIVATE (manager);
 
-	priv->connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &inner_error);
+	priv->connection = g_bus_get_sync (TRACKER_IPC_BUS, NULL, &inner_error);
 	if (!priv->connection) {
 		g_propagate_error (error, inner_error);
 		return FALSE;
@@ -475,7 +475,7 @@ miner_manager_initable_init (GInitable     *initable,
 
 		g_hash_table_insert (priv->miner_proxies, proxy, g_strdup (data->dbus_name));
 
-		data->watch_name_id = g_bus_watch_name (G_BUS_TYPE_SESSION,
+		data->watch_name_id = g_bus_watch_name (TRACKER_IPC_BUS,
 		                                        data->dbus_name,
 		                                        G_BUS_NAME_WATCHER_FLAGS_NONE,
 		                                        miner_appears,
@@ -615,8 +615,8 @@ tracker_miner_manager_new_full (gboolean   auto_start,
  * Returns a list of references for all active miners. Active miners
  * are miners which are running within a process.
  *
- * Returns: (transfer full) (element-type utf8): a #GSList which must
- * be freed with g_slist_free() and all contained data with g_free().
+ * Returns: (transfer full) (element-type utf8) (nullable): a #GSList which
+ * must be freed with g_slist_free() and all contained data with g_free().
  * Otherwise %NULL is returned if there are no miners.
  *
  * Since: 0.8
@@ -683,6 +683,41 @@ tracker_miner_manager_get_running (TrackerMinerManager *manager)
 }
 
 static void
+load_running_miners_only (TrackerMinerManager *manager)
+{
+	TrackerMinerManagerPrivate *priv;
+	GSList *running, *l;
+	gint prefix_len;
+
+	priv = TRACKER_MINER_MANAGER_GET_PRIVATE (manager);
+
+	running = tracker_miner_manager_get_running (manager);
+	prefix_len = strlen (TRACKER_MINER_DBUS_NAME_PREFIX);
+
+	for (l = running; l; l = l->next) {
+		MinerData *data;
+		const gchar *dbus_name;
+		gchar *p;
+
+		dbus_name = l->data;
+		data = g_slice_new0 (MinerData);
+		data->dbus_path = g_strdup_printf ("/%s", dbus_name);
+
+		p = data->dbus_path;
+		while ((p = strchr (p, '.')) != NULL) {
+			*p++ = '/';
+		}
+
+		data->dbus_name = l->data;
+		data->display_name = g_strdup (dbus_name + prefix_len);
+		data->description = g_strdup (data->display_name);
+		priv->miners = g_list_prepend (priv->miners, data);
+	}
+
+	g_slist_free (running);
+}
+
+static void
 check_file (GFile    *file,
             gpointer  user_data)
 {
@@ -724,9 +759,9 @@ check_file (GFile    *file,
 
 	data = g_slice_new0 (MinerData);
 	data->dbus_path = dbus_path;
-	data->dbus_name = dbus_name;
+	data->dbus_name = dbus_name;        /* In .service file as Name */
 	data->display_name = display_name;
-	data->description = description;
+	data->description = description;    /* In .desktop file as _comment */
 
 	priv->miners = g_list_prepend (priv->miners, data);
 
@@ -746,8 +781,15 @@ directory_foreach (GFile    *file,
 	GFileInfo *info;
 	GFile *child;
 
-	enumerator = g_file_enumerate_children (file, G_FILE_ATTRIBUTE_STANDARD_NAME,
-	                                        G_FILE_QUERY_INFO_NONE, NULL, NULL);
+	enumerator = g_file_enumerate_children (file,
+	                                        G_FILE_ATTRIBUTE_STANDARD_NAME,
+	                                        G_FILE_QUERY_INFO_NONE,
+	                                        NULL,
+	                                        NULL);
+
+	if (!enumerator) {
+		return;
+	}
 
 	while ((info = g_file_enumerator_next_file (enumerator, NULL, NULL)) != NULL) {
 
@@ -767,7 +809,16 @@ static void
 initialize_miners_data (TrackerMinerManager *manager)
 {
 	GFile *file;
-	const gchar *miners_dir;
+	const gchar *miners_dir, *miners_dir_disabled;
+
+	miners_dir_disabled = g_getenv ("TRACKER_MINERS_DIR_DISABLED");
+	if (G_UNLIKELY (miners_dir_disabled != NULL)) {
+		miners_dir = TRACKER_MINERS_DIR;
+		g_message ("Crawling miners found on DBus not from .desktop files (set in env)");
+
+		load_running_miners_only (manager);
+		return;
+	}
 
 	/* Go through service files */
 	miners_dir = g_getenv ("TRACKER_MINERS_DIR");
@@ -778,7 +829,7 @@ initialize_miners_data (TrackerMinerManager *manager)
 	}
 
 	file = g_file_new_for_path (miners_dir);
-	directory_foreach (file, ".desktop", (GFunc) check_file, manager);
+	directory_foreach (file, ".service", (GFunc) check_file, manager);
 	g_object_unref (file);
 }
 
@@ -790,8 +841,8 @@ initialize_miners_data (TrackerMinerManager *manager)
  * miners are miners which may or may not be running in a process at
  * the current time.
  *
- * Returns: (transfer full) (element-type utf8): a #GSList which must
- * be freed with g_slist_free() and all contained data with g_free().
+ * Returns: (transfer full) (element-type utf8) (nullable): a #GSList which
+ * must be freed with g_slist_free() and all contained data with g_free().
  * Otherwise %NULL is returned if there are no miners.
  *
  * Since: 0.8
@@ -1527,7 +1578,7 @@ miner_manager_index_file_sync (TrackerMinerManager *manager,
 
 	g_variant_unref (v);
 
-	return FALSE;
+	return TRUE;
 }
 
 static void
@@ -1554,7 +1605,7 @@ miner_manager_index_file_thread (GTask *task,
  * @file: a URL valid in GIO of a file to give to the miner for processing
  * @error: (out callee-allocates) (transfer full) (allow-none): return location for errors
  *
- * Tells the filesystem miner to index the @file.
+ * Tells the filesystem miner to start indexing the @file.
  *
  * On failure @error will be set.
  *
@@ -1581,9 +1632,9 @@ tracker_miner_manager_index_file (TrackerMinerManager  *manager,
  * @callback: (scope async): a #GAsyncReadyCallback to call when the request is satisfied
  * @user_data: the data to pass to the callback function
  *
- * Tells the filesystem miner to index the @file. When the operation is called,
+ * Tells the filesystem miner to start indexing the @file. Once the message has been sent,
  * @callback will be called. You can then call tracker_miner_manager_index_file_finish()
- * to get the result of the operation.
+ * to get the result.
  *
  * Since: 0.16
  **/

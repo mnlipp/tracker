@@ -20,10 +20,9 @@
 
 #include "config.h"
 
-/* For timegm usage on __GLIBC__ */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
+/* For timegm usage on __GLIBC__ we need _GNU_SOURCE, should be
+ * defined in config.h based on configure checks...
+ */
 
 #include <strings.h>
 #include <string.h>
@@ -46,8 +45,7 @@ tracker_string_to_date (const gchar *date_string,
                         gint        *offset_p,
                         GError      **error)
 {
-	/* TODO Add more checks and use GError to report invalid input
-	 * as this is potential user input.
+	/* TODO Add more checks.
 	 */
 
 	static GRegex *regex = NULL;
@@ -59,7 +57,11 @@ tracker_string_to_date (const gchar *date_string,
 	gint offset;
 	gboolean timezoned;
 
-	g_return_val_if_fail (date_string, -1);
+	if (!date_string) {
+		g_set_error (error, TRACKER_DATE_ERROR, TRACKER_DATE_ERROR_EMPTY,
+		             "Empty date string");
+		return -1;
+	}
 
 	/* We should have a valid iso 8601 date in format
 	 * YYYY-MM-DDThh:mm:ss with optional TZ

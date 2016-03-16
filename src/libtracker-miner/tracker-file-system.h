@@ -54,7 +54,8 @@ typedef gboolean (* TrackerFileSystemTraverseFunc) (GFile    *file,
 
 GType      tracker_file_system_get_type      (void) G_GNUC_CONST;
 
-TrackerFileSystem * tracker_file_system_new  (void);
+TrackerFileSystem *
+              tracker_file_system_new            (GFile              *root);
 
 GFile *       tracker_file_system_get_file       (TrackerFileSystem  *file_system,
                                                   GFile              *file,
@@ -69,12 +70,15 @@ void          tracker_file_system_traverse       (TrackerFileSystem             
                                                   GFile                         *root,
                                                   GTraverseType                  order,
                                                   TrackerFileSystemTraverseFunc  func,
+                                                  gint                           max_depth,
                                                   gpointer                       user_data);
 
 void          tracker_file_system_forget_files   (TrackerFileSystem *file_system,
 						  GFile             *root,
 						  GFileType          file_type);
 
+GFileType     tracker_file_system_get_file_type  (TrackerFileSystem  *file_system,
+                                                  GFile              *file);
 /* properties */
 void      tracker_file_system_register_property (GQuark             prop,
                                                  GDestroyNotify     destroy_notify);
@@ -89,6 +93,11 @@ gpointer  tracker_file_system_get_property   (TrackerFileSystem  *file_system,
 void      tracker_file_system_unset_property (TrackerFileSystem  *file_system,
                                               GFile              *file,
                                               GQuark              prop);
+
+gboolean  tracker_file_system_get_property_full (TrackerFileSystem *file_system,
+                                                 GFile             *file,
+                                                 GQuark             prop,
+                                                 gpointer          *data);
 
 G_END_DECLS
 

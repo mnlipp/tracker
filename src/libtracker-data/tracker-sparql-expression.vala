@@ -26,6 +26,12 @@ class Tracker.Sparql.Expression : Object {
 	const string FTS_NS = "http://www.tracker-project.org/ontologies/fts#";
 	const string TRACKER_NS = "http://www.tracker-project.org/ontologies/tracker#";
 
+	enum TimeFormatType {
+		SECONDS,
+		MINUTES,
+		HOURS
+	}
+
 	string? fts_sql;
 
 	public Expression (Query query) {
@@ -449,6 +455,45 @@ class Tracker.Sparql.Expression : Object {
 		expect (SparqlTokenType.CLOSE_PARENS);
 	}
 
+	void translate_date (StringBuilder sql, string format) throws Sparql.Error {
+		sql.append_printf ("strftime (\"%s\", ", format);
+
+		if (accept (SparqlTokenType.VAR)) {
+			string variable_name = get_last_string ().substring (1);
+			var variable = context.get_variable (variable_name);
+			sql.append (variable.get_extra_sql_expression ("localDate"));
+			sql.append (" * 24 * 3600");
+		} else {
+			translate_primary_expression (sql);
+		}
+
+		sql.append (", \"unixepoch\")");
+	}
+
+	void translate_time (StringBuilder sql, TimeFormatType type) throws Sparql.Error {
+		sql.append ("(");
+		if (accept (SparqlTokenType.VAR)) {
+			string variable_name = get_last_string ().substring (1);
+			var variable = context.get_variable (variable_name);
+			sql.append (variable.get_extra_sql_expression ("localTime"));
+		} else {
+			translate_primary_expression (sql);
+		}
+
+		switch (type) {
+		case TimeFormatType.SECONDS:
+			sql.append ("% 60");
+			break;
+		case TimeFormatType.MINUTES:
+			sql.append (" / 60 % 60");
+			break;
+		case TimeFormatType.HOURS:
+			sql.append (" / 3600 % 24");
+			break;
+		}
+		sql.append (")");
+	}
+
 	PropertyType translate_function (StringBuilder sql, string uri) throws Sparql.Error {
 		if (uri == XSD_NS + "string") {
 			// conversion to string
@@ -603,64 +648,22 @@ class Tracker.Sparql.Expression : Object {
 
 			return PropertyType.STRING;
 		} else if (uri == FN_NS + "year-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("strftime (\"%Y\", ");
-			sql.append (variable.get_extra_sql_expression ("localDate"));
-			sql.append (" * 24 * 3600, \"unixepoch\")");
-
+			translate_date (sql, "%Y");
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "month-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("strftime (\"%m\", ");
-			sql.append (variable.get_extra_sql_expression ("localDate"));
-			sql.append (" * 24 * 3600, \"unixepoch\")");
-
+			translate_date (sql, "%m");
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "day-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("strftime (\"%d\", ");
-			sql.append (variable.get_extra_sql_expression ("localDate"));
-			sql.append (" * 24 * 3600, \"unixepoch\")");
-
+			translate_date (sql, "%d");
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "hours-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("(");
-			sql.append (variable.get_extra_sql_expression ("localTime"));
-			sql.append (" / 3600)");
-
+			translate_time (sql, TimeFormatType.HOURS);
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "minutes-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("(");
-			sql.append (variable.get_extra_sql_expression ("localTime"));
-			sql.append (" / 60 % 60)");
-
+			translate_time (sql, TimeFormatType.MINUTES);
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "seconds-from-dateTime") {
-			expect (SparqlTokenType.VAR);
-			string variable_name = get_last_string ().substring (1);
-			var variable = context.get_variable (variable_name);
-
-			sql.append ("(");
-			sql.append (variable.get_extra_sql_expression ("localTime"));
-			sql.append ("% 60)");
-
+			translate_time (sql, TimeFormatType.SECONDS);
 			return PropertyType.INTEGER;
 		} else if (uri == FN_NS + "timezone-from-dateTime") {
 			expect (SparqlTokenType.VAR);
@@ -678,6 +681,22 @@ class Tracker.Sparql.Expression : Object {
 			sql.append (")");
 
 			return PropertyType.INTEGER;
+		} else if (uri == FN_NS + "replace") {
+			sql.append ("replace(");
+			translate_expression_as_string (sql);
+			sql.append (", ");
+
+			expect (SparqlTokenType.COMMA);
+			translate_expression_as_string (sql);
+			sql.append (", ");
+
+			expect (SparqlTokenType.COMMA);
+			translate_expression_as_string (sql);
+
+			// FIXME: No regex (nor its modifier flags) support
+			sql.append (")");
+
+			return PropertyType.STRING;
 		} else if (uri == FTS_NS + "rank") {
 			bool is_var;
 			string v = pattern.parse_var_or_term (null, out is_var);
@@ -690,7 +709,7 @@ class Tracker.Sparql.Expression : Object {
 			var variable = context.get_variable (v);
 
 			sql.append (variable.sql_expression);
-			fts_sql = "tracker_offsets(offsets(\"fts\"),fts_property_names())";
+			fts_sql = "tracker_offsets(\"fts5\")";
 			return PropertyType.STRING;
 		} else if (uri == FTS_NS + "snippet") {
 			bool is_var;
@@ -699,7 +718,10 @@ class Tracker.Sparql.Expression : Object {
 			var variable = context.get_variable (v);
 			var fts = new StringBuilder ();
 
-			fts.append_printf ("snippet(\"fts\"");
+			fts.append_printf ("snippet(\"fts5\"");
+
+			// lookup column
+			fts.append (", -1");
 
 			// "start match" text
 			if (accept (SparqlTokenType.COMMA)) {
@@ -721,9 +743,6 @@ class Tracker.Sparql.Expression : Object {
 			} else {
 				fts.append (", '...'");
 			}
-
-			// lookup column
-			fts.append (", -1");
 
 			// Approximate number of words in context
 			if (accept (SparqlTokenType.COMMA)) {
@@ -1123,7 +1142,12 @@ class Tracker.Sparql.Expression : Object {
 			next ();
 			string variable_name = get_last_string ().substring (1);
 			var variable = context.get_variable (variable_name);
-			sql.append (variable.sql_expression);
+
+			if (context == variable.origin_context && variable.binding != null) {
+				sql.append (variable.binding.sql_expression);
+			} else {
+				sql.append (variable.sql_expression);
+			}
 
 			if (variable.binding == null) {
 				return PropertyType.UNKNOWN;
@@ -1156,6 +1180,26 @@ class Tracker.Sparql.Expression : Object {
 			var result = translate_function (sql, TRACKER_NS + "coalesce");
 			expect (SparqlTokenType.CLOSE_PARENS);
 			return result;
+		case SparqlTokenType.CONCAT:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "concat");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.CONTAINS:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "contains");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.ENCODE_FOR_URI:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			sql.append ("SparqlEncodeForUri (");
+			translate_expression_as_string (sql);
+			sql.append (")");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return PropertyType.STRING;
 		case SparqlTokenType.IF:
 			return translate_if_call (sql);
 		case SparqlTokenType.SAMETERM:
@@ -1184,6 +1228,64 @@ class Tracker.Sparql.Expression : Object {
 		case SparqlTokenType.ISLITERAL:
 			next ();
 			return PropertyType.BOOLEAN;
+		case SparqlTokenType.LCASE:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "lower-case");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.UCASE:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "upper-case");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.STRLEN:
+			next ();
+			sql.append ("LENGTH(");
+			type = translate_aggregate_expression (sql);
+			sql.append (")");
+			return PropertyType.INTEGER;
+		case SparqlTokenType.STRSTARTS:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "starts-with");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.STRENDS:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "ends-with");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.SUBSTR:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "substring");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.STRBEFORE:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			sql.append ("SparqlStringBefore (");
+			translate_expression_as_string (sql);
+			expect (SparqlTokenType.COMMA);
+			sql.append (",");
+			translate_expression_as_string (sql);
+			sql.append (")");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return PropertyType.STRING;
+		case SparqlTokenType.STRAFTER:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			sql.append ("SparqlStringAfter (");
+			translate_expression_as_string (sql);
+			expect (SparqlTokenType.COMMA);
+			sql.append (",");
+			translate_expression_as_string (sql);
+			sql.append (")");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return PropertyType.STRING;
 		case SparqlTokenType.REGEX:
 			translate_regex (sql);
 			query.no_cache = true;
@@ -1221,6 +1323,102 @@ class Tracker.Sparql.Expression : Object {
 			sql.append ("MAX(");
 			type = translate_aggregate_expression (sql);
 			sql.append (")");
+			return type;
+		case SparqlTokenType.ABS:
+			next ();
+			sql.append ("ABS(");
+			type = translate_aggregate_expression (sql);
+			sql.append (")");
+			return type;
+		case SparqlTokenType.ROUND:
+			next ();
+			sql.append ("ROUND(");
+			type = translate_aggregate_expression (sql);
+			sql.append (")");
+			return type;
+		case SparqlTokenType.CEIL:
+			next ();
+			sql.append ("SparqlCeil(");
+			type = translate_aggregate_expression (sql);
+			sql.append (")");
+			return type;
+		case SparqlTokenType.FLOOR:
+			next ();
+			sql.append ("SparqlFloor(");
+			type = translate_aggregate_expression (sql);
+			sql.append (")");
+			return type;
+		case SparqlTokenType.RAND:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			expect (SparqlTokenType.CLOSE_PARENS);
+			sql.append ("SparqlRand()");
+			return PropertyType.DOUBLE;
+		case SparqlTokenType.NOW:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			expect (SparqlTokenType.CLOSE_PARENS);
+			sql.append ("strftime('%s', 'now')");
+			return PropertyType.DATETIME;
+		case SparqlTokenType.SECONDS:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "seconds-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.MINUTES:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "minutes-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.HOURS:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "hours-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.DAY:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "day-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.MONTH:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "month-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.YEAR:
+			next ();
+			expect (SparqlTokenType.OPEN_PARENS);
+			var result = translate_function (sql, FN_NS + "year-from-dateTime");
+			expect (SparqlTokenType.CLOSE_PARENS);
+			return result;
+		case SparqlTokenType.MD5:
+			next ();
+			sql.append ("SparqlChecksum(");
+			type = translate_aggregate_expression (sql);
+			sql.append (", \"md5\")");
+			return type;
+		case SparqlTokenType.SHA1:
+			next ();
+			sql.append ("SparqlChecksum(");
+			type = translate_aggregate_expression (sql);
+			sql.append (", \"sha1\")");
+			return type;
+		case SparqlTokenType.SHA256:
+			next ();
+			sql.append ("SparqlChecksum(");
+			type = translate_aggregate_expression (sql);
+			sql.append (", \"sha256\")");
+			return type;
+		case SparqlTokenType.SHA512:
+			next ();
+			sql.append ("SparqlChecksum(");
+			type = translate_aggregate_expression (sql);
+			sql.append (", \"sha512\")");
 			return type;
 		case SparqlTokenType.GROUP_CONCAT:
 			next ();

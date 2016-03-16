@@ -20,10 +20,6 @@
 
 #include "config.h"
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -39,61 +35,14 @@
 #endif
 
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <gio/gio.h>
 
 #include "tracker-log.h"
-#include "tracker-os-dependant.h"
 #include "tracker-file-utils.h"
 #include "tracker-type-utils.h"
 
 #define TEXT_SNIFF_SIZE 4096
-
-static GHashTable *file_locks = NULL;
-
-#ifndef LOCK_EX
-
-/* Required on Solaris */
-#define LOCK_EX 1
-#define LOCK_SH 2
-#define LOCK_UN 3
-#define LOCK_NB 4
-
-static int flock(int fd, int op)
-{
-    int rc = 0;
-
-#if defined(F_SETLK) && defined(F_SETLKW)
-    struct flock fl = {0};
-
-    switch (op & (LOCK_EX|LOCK_SH|LOCK_UN)) {
-    case LOCK_EX:
-        fl.l_type = F_WRLCK;
-        break;
-
-    case LOCK_SH:
-        fl.l_type = F_RDLCK;
-        break;
-
-    case LOCK_UN:
-        fl.l_type = F_UNLCK;
-        break;
-
-    default:
-        errno = EINVAL;
-        return -1;
-    }
-
-    fl.l_whence = SEEK_SET;
-    rc = fcntl (fd, op & LOCK_NB ? F_SETLK : F_SETLKW, &fl);
-
-    if (rc && (errno == EAGAIN))
-        errno = EWOULDBLOCK;
-#endif /* defined(F_SETLK) && defined(F_SETLKW)  */
-
-    return rc;
-}
-
-#endif /* LOCK_EX */
 
 int
 tracker_file_open_fd (const gchar *path)
@@ -307,44 +256,62 @@ tracker_file_get_mime_type (GFile *file)
 
 #endif /* __linux__ */
 
-guint64
-tracker_file_system_get_remaining_space (const gchar *path)
+static gboolean
+statvfs_helper (const gchar *path, struct __statvfs *st)
 {
-	guint64 remaining;
-	struct __statvfs st;
+	gchar *_path;
+	int retval;
 
 //LCOV_EXCL_START
-	if (__statvfs (path, &st) == -1) {
-		remaining = 0;
+	/* Iterate up the path to the root until statvfs() doesn’t error with
+	 * ENOENT. This prevents the call failing on first-startup when (for
+	 * example) ~/.cache/tracker might not exist. */
+	_path = g_strdup (path);
+
+	while ((retval = __statvfs (_path, st)) == -1 && errno == ENOENT) {
+		gchar *tmp = g_path_get_dirname (_path);
+		g_free (_path);
+		_path = tmp;
+	}
+
+	g_free (_path);
+//LCOV_EXCL_STOP
+
+	if (retval == -1) {
 		g_critical ("Could not statvfs() '%s': %s",
 		            path,
 		            g_strerror (errno));
-//LCOV_EXCL_STOP
-	} else {
-		remaining = st.f_bsize * st.f_bavail;
 	}
 
-	return remaining;
+	return (retval == 0);
+}
+
+guint64
+tracker_file_system_get_remaining_space (const gchar *path)
+{
+	struct __statvfs st;
+	guint64 available;
+
+	if (statvfs_helper (path, &st)) {
+		available = (geteuid () == 0) ? st.f_bfree : st.f_bavail;
+		return st.f_bsize * available;
+	} else {
+		return 0;
+	}
 }
 
 gdouble
 tracker_file_system_get_remaining_space_percentage (const gchar *path)
 {
-	gdouble remaining;
 	struct __statvfs st;
+	guint64 available;
 
-//LCOV_EXCL_START
-	if (__statvfs (path, &st) == -1) {
-		remaining = 0.0;
-		g_critical ("Could not statvfs() '%s': %s",
-		            path,
-		            g_strerror (errno));
-//LCOV_EXCL_STOP
+	if (statvfs_helper (path, &st)) {
+		available = (geteuid () == 0) ? st.f_bfree : st.f_bavail;
+		return (((gdouble) available * 100) / st.f_blocks);
 	} else {
-		remaining = (st.f_bavail * 100.0 / st.f_blocks);
+		return 0.0;
 	}
-
-	return remaining;
 }
 
 gboolean
@@ -531,9 +498,67 @@ tracker_path_list_filter_duplicates (GSList      *roots,
 	return new_list;
 }
 
+const struct {
+	const gchar *symbol;
+	GUserDirectory user_dir;
+} special_dirs[] = {
+	{"&DESKTOP",      G_USER_DIRECTORY_DESKTOP},
+	{"&DOCUMENTS",    G_USER_DIRECTORY_DOCUMENTS},
+	{"&DOWNLOAD",     G_USER_DIRECTORY_DOWNLOAD},
+	{"&MUSIC",        G_USER_DIRECTORY_MUSIC},
+	{"&PICTURES",     G_USER_DIRECTORY_PICTURES},
+	{"&PUBLIC_SHARE", G_USER_DIRECTORY_PUBLIC_SHARE},
+	{"&TEMPLATES",    G_USER_DIRECTORY_TEMPLATES},
+	{"&VIDEOS",       G_USER_DIRECTORY_VIDEOS}
+};
+
+
+static gchar *
+get_user_special_dir_if_not_home (const gchar *path)
+{
+	int i;
+	const gchar *real_path;
+	GFile *home, *file;
+	gboolean res;
+
+	real_path = NULL;
+
+	for (i = 0; i < G_N_ELEMENTS(special_dirs); i++) {
+		if (strcmp (path, special_dirs[i].symbol) == 0) {
+			real_path = g_get_user_special_dir (special_dirs[i].user_dir);
+
+			if (real_path == NULL) {
+				g_warning ("Unable to get XDG user directory path for special "
+				           "directory %s. Ignoring this location.", path);
+			}
+
+			break;
+		}
+	}
+
+	if (real_path == NULL)
+		return NULL;
+
+	file = g_file_new_for_path (real_path);
+	home = g_file_new_for_path (g_get_home_dir ());
+
+	res = g_file_equal (file, home);
+	g_object_unref (file);
+	g_object_unref (home);
+
+	if (res) {
+		/* ignore XDG directories set to $HOME */
+		return NULL;
+	} else {
+		return g_strdup (real_path);
+	}
+}
+
+
 gchar *
 tracker_path_evaluate_name (const gchar *path)
 {
+	gchar        *special_dir_path;
 	gchar        *final_path;
 	gchar       **tokens;
 	gchar       **token;
@@ -544,6 +569,13 @@ tracker_path_evaluate_name (const gchar *path)
 
 	if (!path || path[0] == '\0') {
 		return NULL;
+	}
+
+	/* See if it is a special directory name. */
+	special_dir_path = get_user_special_dir_if_not_home (path);
+
+	if (special_dir_path != NULL) {
+		return special_dir_path;
 	}
 
 	/* First check the simple case of using tilder */
@@ -702,180 +734,6 @@ tracker_path_has_write_access_or_was_created (const gchar *path)
 }
 
 gboolean
-tracker_file_lock (GFile *file)
-{
-	gint fd, retval;
-	gchar *path;
-
-	g_return_val_if_fail (G_IS_FILE (file), FALSE);
-
-	if (G_UNLIKELY (!file_locks)) {
-		file_locks = g_hash_table_new_full ((GHashFunc) g_file_hash,
-		                                    (GEqualFunc) g_file_equal,
-		                                    (GDestroyNotify) g_object_unref,
-		                                    NULL);
-	}
-
-	/* Don't try to lock twice */
-	if (g_hash_table_lookup (file_locks, file) != NULL) {
-		return TRUE;
-	}
-
-	if (!g_file_is_native (file)) {
-		return FALSE;
-	}
-
-	path = g_file_get_path (file);
-
-	if (!path) {
-		return FALSE;
-	}
-
-	fd = open (path, O_RDONLY);
-
-	if (fd < 0) {
-//LCOV_EXCL_START
-		gchar *uri;
-
-		uri = g_file_get_uri (file);
-		g_warning ("Could not open '%s'", uri);
-		g_free (uri);
-		g_free (path);
-
-		return FALSE;
-//LCOV_EXCL_STOP
-	}
-
-	retval = flock (fd, LOCK_EX);
-
-	if (retval == 0) {
-		g_hash_table_insert (file_locks,
-		                     g_object_ref (file),
-		                     GINT_TO_POINTER (fd));
-	} else {
-//LCOV_EXCL_START
-		gchar *uri;
-
-		uri = g_file_get_uri (file);
-		g_warning ("Could not lock file '%s'", uri);
-		g_free (uri);
-		close (fd);
-//LCOV_EXCL_STOP
-	}
-
-	g_free (path);
-
-	return (retval == 0);
-}
-
-gboolean
-tracker_file_unlock (GFile *file)
-{
-	gint retval, fd;
-
-	g_return_val_if_fail (G_IS_FILE (file), TRUE);
-
-	if (!file_locks) {
-		return TRUE;
-	}
-
-	fd = GPOINTER_TO_INT (g_hash_table_lookup (file_locks, file));
-
-	if (fd == 0) {
-		/* File wasn't actually locked */
-		return TRUE;
-	}
-
-	retval = flock (fd, LOCK_UN);
-
-	if (retval < 0) {
-//LCOV_EXCL_START
-		gchar *uri;
-
-		uri = g_file_get_uri (file);
-		g_warning ("Could not unlock file '%s'", uri);
-		g_free (uri);
-
-		return FALSE;
-//LCOV_EXCL_STOP
-	}
-
-	g_hash_table_remove (file_locks, file);
-	close (fd);
-
-	return TRUE;
-}
-
-gboolean
-tracker_file_is_locked (GFile *file)
-{
-	GFileInfo *file_info;
-	gboolean retval = FALSE;
-	gchar *path;
-	gint fd;
-
-	g_return_val_if_fail (G_IS_FILE (file), FALSE);
-
-	if (!g_file_is_native (file)) {
-		return FALSE;
-	}
-
-	/* Handle regular files; skip pipes and alike */
-	file_info = g_file_query_info (file,
-	                               G_FILE_ATTRIBUTE_STANDARD_TYPE,
-	                               G_FILE_QUERY_INFO_NONE,
-	                               NULL,
-	                               NULL);
-
-	if (!file_info) {
-		return FALSE;
-	}
-
-	if (g_file_info_get_file_type (file_info) != G_FILE_TYPE_REGULAR) {
-		g_object_unref (file_info);
-		return FALSE;
-	}
-
-	g_object_unref (file_info);
-
-	path = g_file_get_path (file);
-
-	if (!path) {
-		return FALSE;
-	}
-
-	fd = open (path, O_RDONLY);
-
-	if (fd < 0) {
-		gchar *uri;
-
-		uri = g_file_get_uri (file);
-		g_warning ("Could not open '%s'", uri);
-		g_free (uri);
-		g_free (path);
-
-		return FALSE;
-	}
-
-	/* Check for locks */
-	retval = flock (fd, LOCK_SH | LOCK_NB);
-
-	if (retval < 0) {
-		if (errno == EWOULDBLOCK) {
-			retval = TRUE;
-		}
-	} else {
-		/* Oops, call was successful, unlock again the file */
-		flock (fd, LOCK_UN);
-	}
-
-	close (fd);
-	g_free (path);
-
-	return retval;
-}
-
-gboolean
 tracker_file_is_hidden (GFile *file)
 {
 	GFileInfo *file_info;
@@ -889,6 +747,15 @@ tracker_file_is_hidden (GFile *file)
 		/* Check if GIO says the file is hidden */
 		is_hidden = g_file_info_get_is_hidden (file_info);
 		g_object_unref (file_info);
+	} else {
+		gchar *basename;
+
+		/* Resort last to basename checks, this might happen on
+		 * already deleted files.
+		 */
+		basename = g_file_get_basename (file);
+		is_hidden = basename[0] == '.';
+		g_free (basename);
 	}
 
 	return is_hidden;

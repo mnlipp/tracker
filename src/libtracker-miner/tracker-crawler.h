@@ -27,17 +27,19 @@
 #include <glib-object.h>
 #include <gio/gio.h>
 
+#include "tracker-data-provider.h"
+
 G_BEGIN_DECLS
 
 #define TRACKER_TYPE_CRAWLER            (tracker_crawler_get_type ())
-#define TRACKER_CRAWLER(object)                 (G_TYPE_CHECK_INSTANCE_CAST ((object), TRACKER_TYPE_CRAWLER, TrackerCrawler))
+#define TRACKER_CRAWLER(object)         (G_TYPE_CHECK_INSTANCE_CAST ((object), TRACKER_TYPE_CRAWLER, TrackerCrawler))
 #define TRACKER_CRAWLER_CLASS(klass)    (G_TYPE_CHECK_CLASS_CAST ((klass), TRACKER_TYPE_CRAWLER, TrackerCrawlerClass))
 #define TRACKER_IS_CRAWLER(object)      (G_TYPE_CHECK_INSTANCE_TYPE ((object), TRACKER_TYPE_CRAWLER))
 #define TRACKER_IS_CRAWLER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass), TRACKER_TYPE_CRAWLER))
 #define TRACKER_CRAWLER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), TRACKER_TYPE_CRAWLER, TrackerCrawlerClass))
 
 /* Max timeouts time (in msec) */
-#define TRACKER_MAX_TIMEOUT_INTERVAL 1000
+#define TRACKER_CRAWLER_MAX_TIMEOUT_INTERVAL 1000
 
 typedef struct TrackerCrawler         TrackerCrawler;
 typedef struct TrackerCrawlerClass    TrackerCrawlerClass;
@@ -70,10 +72,11 @@ struct TrackerCrawlerClass {
 };
 
 GType           tracker_crawler_get_type     (void);
-TrackerCrawler *tracker_crawler_new          (void);
+TrackerCrawler *tracker_crawler_new          (TrackerDataProvider *data_provider);
 gboolean        tracker_crawler_start        (TrackerCrawler *crawler,
                                               GFile          *file,
-                                              gboolean        recurse);
+                                              TrackerDirectoryFlags flags,
+					      gint            max_depth);
 void            tracker_crawler_stop         (TrackerCrawler *crawler);
 void            tracker_crawler_pause        (TrackerCrawler *crawler);
 void            tracker_crawler_resume       (TrackerCrawler *crawler);
@@ -86,6 +89,7 @@ const gchar *   tracker_crawler_get_file_attributes (TrackerCrawler *crawler);
 
 GFileInfo *     tracker_crawler_get_file_info       (TrackerCrawler *crawler,
 						     GFile          *file);
+gint            tracker_crawler_get_max_depth       (TrackerCrawler *crawler);
 
 G_END_DECLS
 

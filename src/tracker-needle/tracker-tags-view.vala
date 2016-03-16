@@ -53,18 +53,18 @@ private class TagData {
 	}
 }
 
-public class TrackerTagsView : VBox {
+public class TrackerTagsView : Box {
 	private Sparql.Connection connection;
 	private Cancellable cancellable;
 
 	private List<TagData> tag_data_requests;
 	private List<string> files;
 
-	private ListStore store;
+	private Gtk.ListStore store;
 
 	private const string UI_FILE = "tracker-needle.ui";
 
-	private VBox vbox;
+	private Box vbox;
 	private Label label;
 	private Entry entry;
 	private Button button_add;
@@ -98,7 +98,7 @@ public class TrackerTagsView : VBox {
 
 		cancellable = new Cancellable ();
 
-		store = new ListStore (Col.N_COLUMNS,
+		store = new Gtk.ListStore (Col.N_COLUMNS,
 		                       typeof (int),      /* Selection type */
 		                       typeof (string),   /* Tag ID */
 		                       typeof (string),   /* Tag Name */
@@ -280,7 +280,7 @@ public class TrackerTagsView : VBox {
 		}
 
 		// Get widgets from .ui file
-		vbox = builder.get_object ("vbox_tags") as VBox;
+		vbox = builder.get_object ("vbox_tags") as Box;
 		label = builder.get_object ("label_tag") as Label;
 		entry = builder.get_object ("entry_tag") as Entry;
 		button_add = builder.get_object ("button_add") as Button;
@@ -648,7 +648,7 @@ public class TrackerTagsView : VBox {
 
 	private void untoggle_all () {
 		TreeModel model = view.get_model ();
-		ListStore store = (ListStore) model;
+		Gtk.ListStore store = (Gtk.ListStore) model;
 
 		model.foreach ((model, path, foreach_iter) => {
 			store.set (foreach_iter, Col.SELECTION, Selection.FALSE, -1);

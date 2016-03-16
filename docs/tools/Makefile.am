@@ -1,4 +1,4 @@
-noinst_PROGRAMS = ontology-graph ttl2sgml
+noinst_PROGRAMS = ttl2sgml ttlresource2sgml
 
 AM_CPPFLAGS =                                          \
 	$(BUILD_CFLAGS)                                \
@@ -14,18 +14,22 @@ LDADD =                                                \
 	$(LIBTRACKER_DATA_LIBS) \
 	$(BUILD_LIBS)
 
-ontology_graph_SOURCES =                               \
-	ontology-graph.c
+TTL_LOADER_FILES =                                     \
+	ttl_loader.c                                   \
+	ttl_loader.h                                   \
+	ttl_model.c                                    \
+	ttl_model.h                                    \
+	ttl_sgml.c                                     \
+	ttl_sgml.h                                     \
+	qname.c                                        \
+	qname.h
 
 ttl2sgml_SOURCES =                                     \
-	ttl2sgml.c                                     \
-	ttl_loader.h                                   \
-	ttl_loader.c                                   \
-	ttl_model.h                                    \
-	ttl_model.c                                    \
-	qname.h                                        \
-	qname.c                                        \
-	ttl_sgml.h                                     \
-	ttl_sgml.c
+	$(TTL_LOADER_FILES)                            \
+	ttl2sgml.c
+
+ttlresource2sgml_SOURCES =                             \
+	$(TTL_LOADER_FILES)                            \
+	ttlresource2sgml.c
 
 EXTRA_DIST = gen-doc.sh

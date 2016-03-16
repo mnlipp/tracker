@@ -67,7 +67,7 @@ struct _SparqlTaskData
 		} bulk;
 	} data;
 
-	GSimpleAsyncResult *result;
+	GTask *async_task;
 };
 
 struct _UpdateData {
@@ -79,15 +79,11 @@ struct _UpdateArrayData {
 	TrackerSparqlBuffer *buffer;
 	GPtrArray *tasks;
 	GArray *sparql_array;
-	GArray *error_map;
-	GPtrArray *bulk_ops;
-	gint n_bulk_operations;
 };
 
 struct _BulkOperationMerge {
 	const gchar *bulk_operation;
 	GList *tasks;
-	gchar *sparql;
 };
 
 
@@ -236,18 +232,11 @@ update_array_data_free (UpdateArrayData *update_data)
 		g_array_free (update_data->sparql_array, TRUE);
 	}
 
-	if (update_data->bulk_ops) {
-		/* The BulkOperationMerge structs which contain the sparql strings
-		 * are deallocated here */
-		g_ptr_array_free (update_data->bulk_ops, TRUE);
-	}
-
 	g_ptr_array_foreach (update_data->tasks,
 	                     (GFunc) remove_task_foreach,
 	                     update_data->buffer);
 	g_ptr_array_free (update_data->tasks, TRUE);
 
-	g_array_free (update_data->error_map, TRUE);
 	g_slice_free (UpdateArrayData, update_data);
 }
 
@@ -290,78 +279,49 @@ tracker_sparql_buffer_update_array_cb (GObject      *object,
 		if (global_error) {
 			error = global_error;
 		} else {
-			gint error_pos;
-
-			error_pos = g_array_index (update_data->error_map, gint, i);
-
-			/* Find the corresponing error according to the passed map,
-			 * numbers >= 0 are non-bulk tasks, and < 0 are bulk tasks,
-			 * so the number of bulk operations must be added, as these
-			 * tasks are prepended.
-			 */
-			error_pos += update_data->n_bulk_operations;
-			error = g_ptr_array_index (sparql_array_errors, error_pos);
+			error = g_ptr_array_index (sparql_array_errors, i);
 			if (error) {
-				g_critical ("  (Sparql buffer) Error in task %u of the array-update: %s",
-				            i, error->message);
+				const gchar *sparql = NULL;
+				GFile *file;
+				gchar *uri;
 
-				if (error_pos < update_data->n_bulk_operations) {
-					BulkOperationMerge *bulk;
-					GList *tasks;
-					gint bulk_pos;
+				file = tracker_task_get_file (task);
+				uri = g_file_get_uri (file);
+				g_critical ("  (Sparql buffer) Error in task %u (%s) of the array-update: %s",
+				            i, uri, error->message);
+				g_free (uri);
 
-					bulk_pos = ABS (error_pos - update_data->n_bulk_operations + 1);
-					bulk = g_ptr_array_index (update_data->bulk_ops, bulk_pos);
-					tasks = bulk->tasks;
+				uri = g_file_get_uri (tracker_task_get_file (task));
+				g_debug ("    Affected file: %s", uri);
+				g_free (uri);
 
-					g_debug ("    Affected files:");
+				switch (task_data->type) {
+				case TASK_TYPE_SPARQL_STR:
+					sparql = task_data->data.str;
+					break;
+				case TASK_TYPE_SPARQL:
+					sparql = tracker_sparql_builder_get_result (task_data->data.builder);
+					break;
+				case TASK_TYPE_BULK:
+					sparql = task_data->data.bulk.str;
+					break;
+				default:
+					break;
+				}
 
-					while (tasks) {
-						TrackerTask *task = tasks->data;
-						gchar *uri;
-
-						uri = g_file_get_uri (tracker_task_get_file (task));
-						g_debug ("      - %s", uri);
-						g_free (uri);
-
-						tasks = tasks->next;
-					}
-
-					g_debug ("    Sparql: %s", bulk->sparql);
-				} else {
-					const gchar *sparql;
-					gchar *uri;
-
-					uri = g_file_get_uri (tracker_task_get_file (task));
-					g_debug ("    Affected file: %s", uri);
-					g_free (uri);
-
-					switch (task_data->type) {
-					case TASK_TYPE_SPARQL_STR:
-						sparql = task_data->data.str;
-						break;
-					case TASK_TYPE_SPARQL:
-						sparql = tracker_sparql_builder_get_result (task_data->data.builder);
-						break;
-					default:
-						break;
-					}
-
-					if (sparql) {
-						g_debug ("    Sparql: %s", sparql);
-					}
+				if (sparql) {
+					g_debug ("    Sparql: %s", sparql);
 				}
 			}
 		}
 
 		/* Call finished handler with the error, if any */
-		g_simple_async_result_set_op_res_gpointer (task_data->result,
-		                                           task, NULL);
 		if (error) {
-			g_simple_async_result_set_from_error (task_data->result, error);
+			g_task_return_error (task_data->async_task,
+			                     g_error_copy (error));
+		} else {
+			g_task_return_pointer (task_data->async_task, task, NULL);
 		}
-
-		g_simple_async_result_complete (task_data->result);
 
 		/* No need to deallocate the task here, it will be done when
 		 * unref-ing the UpdateArrayData below */
@@ -380,14 +340,9 @@ tracker_sparql_buffer_update_array_cb (GObject      *object,
 	}
 }
 
-static void
+static gchar *
 bulk_operation_merge_finish (BulkOperationMerge *merge)
 {
-	if (merge->sparql) {
-		g_free (merge->sparql);
-		merge->sparql = NULL;
-	}
-
 	if (merge->bulk_operation && merge->tasks) {
 		GString *equals_string = NULL, *children_string = NULL, *sparql;
 		gint n_equals = 0;
@@ -414,13 +369,23 @@ bulk_operation_merge_finish (BulkOperationMerge *merge)
 			}
 
 			if (task_data->data.bulk.flags & TRACKER_BULK_MATCH_CHILDREN) {
+				gchar *dir_uri;
+
 				if (!children_string) {
-					children_string = g_string_new ("");
+					children_string = g_string_new (NULL);
 				} else {
-					g_string_append_c (children_string, ',');
+					g_string_append (children_string, "||");
 				}
 
-				g_string_append_printf (children_string, "\"%s\"", uri);
+				if (uri[strlen (uri) - 1] == '/')
+					dir_uri = g_strdup (uri);
+				else
+					dir_uri = g_strdup_printf ("%s/", uri);
+
+				g_string_append_printf (children_string,
+				                        "STRSTARTS (?u, \"%s\")",
+				                        dir_uri);
+				g_free (dir_uri);
 			}
 
 			if (task_data->data.bulk.flags & TRACKER_BULK_MATCH_LOGICAL_RESOURCES) {
@@ -459,7 +424,7 @@ bulk_operation_merge_finish (BulkOperationMerge *merge)
 			g_string_append_printf (sparql,
 			                        " WHERE { "
 			                        "  ?f nie:url ?u ."
-			                        "  FILTER (tracker:uri-is-descendant (%s, ?u))",
+			                        "  FILTER (%s)",
 			                        children_string->str);
 			g_string_free (children_string, TRUE);
 
@@ -469,8 +434,10 @@ bulk_operation_merge_finish (BulkOperationMerge *merge)
 			g_string_append_printf (sparql, "} ");
 		}
 
-		merge->sparql = g_string_free (sparql, FALSE);
+		return g_string_free (sparql, FALSE);
 	}
+
+	return NULL;
 }
 
 static BulkOperationMerge *
@@ -491,7 +458,6 @@ bulk_operation_merge_free (BulkOperationMerge *operation)
 	                (GFunc) tracker_task_unref,
 	                NULL);
 	g_list_free (operation->tasks);
-	g_free (operation->sparql);
 	g_slice_free (BulkOperationMerge, operation);
 }
 
@@ -500,10 +466,10 @@ tracker_sparql_buffer_flush (TrackerSparqlBuffer *buffer,
                              const gchar         *reason)
 {
 	TrackerSparqlBufferPrivate *priv;
-	GPtrArray *bulk_ops = NULL;
-	GArray *sparql_array, *error_map;
+	GArray *sparql_array;
+	GPtrArray *bulk_sparql;
 	UpdateArrayData *update_data;
-	gint i, j;
+	gint i;
 
 	priv = buffer->priv;
 
@@ -525,79 +491,41 @@ tracker_sparql_buffer_flush (TrackerSparqlBuffer *buffer,
 
 	/* Loop buffer and construct array of strings */
 	sparql_array = g_array_new (FALSE, TRUE, sizeof (gchar *));
-	error_map = g_array_new (TRUE, TRUE, sizeof (gint));
+	bulk_sparql = g_ptr_array_new_with_free_func ((GDestroyNotify) g_free);
 
 	for (i = 0; i < priv->tasks->len; i++) {
 		SparqlTaskData *task_data;
 		TrackerTask *task;
-		gint pos;
 
 		task = g_ptr_array_index (priv->tasks, i);
 		task_data = tracker_task_get_data (task);
 
 		if (task_data->type == TASK_TYPE_SPARQL_STR) {
 			g_array_append_val (sparql_array, task_data->data.str);
-			pos = sparql_array->len - 1;
 		} else if (task_data->type == TASK_TYPE_SPARQL) {
 			const gchar *str;
 
 			str = tracker_sparql_builder_get_result (task_data->data.builder);
 			g_array_append_val (sparql_array, str);
-			pos = sparql_array->len - 1;
 		} else if (task_data->type == TASK_TYPE_BULK) {
 			BulkOperationMerge *bulk = NULL;
-			gint j;
+			gchar *str;
 
-			if (G_UNLIKELY (!bulk_ops)) {
-				bulk_ops = g_ptr_array_new_with_free_func ((GDestroyNotify) bulk_operation_merge_free);
-			}
-
-			for (j = 0; j < bulk_ops->len; j++) {
-				BulkOperationMerge *cur;
-
-				cur = g_ptr_array_index (bulk_ops, j);
-
-				/* This is a comparison of intern strings */
-				if (cur->bulk_operation == task_data->data.bulk.str) {
-					bulk = cur;
-					pos = - 1 - j;
-					break;
-				}
-			}
-
-			if (!bulk) {
-				bulk = bulk_operation_merge_new (task_data->data.bulk.str);
-				g_ptr_array_add (bulk_ops, bulk);
-				pos = - bulk_ops->len;
-			}
-
+			bulk = bulk_operation_merge_new (task_data->data.bulk.str);
 			bulk->tasks = g_list_prepend (bulk->tasks,
 			                              tracker_task_ref (task));
-		}
 
-		g_array_append_val (error_map, pos);
-	}
+			str = bulk_operation_merge_finish (bulk);
+			g_ptr_array_add (bulk_sparql, str);
+			g_array_append_val (sparql_array, str);
 
-	if (bulk_ops) {
-		for (j = 0; j < bulk_ops->len; j++) {
-			BulkOperationMerge *bulk;
-
-			bulk = g_ptr_array_index (bulk_ops, j);
-			bulk_operation_merge_finish (bulk);
-
-			if (bulk->sparql) {
-				g_array_prepend_val (sparql_array,
-				                     bulk->sparql);
-			}
+			bulk_operation_merge_free (bulk);
 		}
 	}
 
 	update_data = g_slice_new0 (UpdateArrayData);
 	update_data->buffer = buffer;
 	update_data->tasks = g_ptr_array_ref (priv->tasks);
-	update_data->bulk_ops = bulk_ops;
-	update_data->n_bulk_operations = bulk_ops ? bulk_ops->len : 0;
-	update_data->error_map = error_map;
 	update_data->sparql_array = sparql_array;
 
 	/* Empty pool, update_data will keep
@@ -617,6 +545,9 @@ tracker_sparql_buffer_flush (TrackerSparqlBuffer *buffer,
 	                                              tracker_sparql_buffer_update_array_cb,
 	                                              update_data);
 
+	/* These strings we generated here can be freed now */
+	g_ptr_array_free (bulk_sparql, TRUE);
+
 	return TRUE;
 }
 
@@ -635,19 +566,78 @@ tracker_sparql_buffer_update_cb (GObject      *object,
 	task_data = tracker_task_get_data (update_data->task);
 
 	/* Call finished handler with the error, if any */
-	g_simple_async_result_set_op_res_gpointer (task_data->result,
-						   update_data->task,
-						   NULL);
 	if (error) {
-		g_simple_async_result_set_from_error (task_data->result, error);
-		g_error_free (error);
+		g_task_return_error (task_data->async_task, error);
+	} else {
+		g_task_return_pointer (task_data->async_task,
+		                       update_data->task, NULL);
 	}
-
-	g_simple_async_result_complete (task_data->result);
 
 	tracker_task_pool_remove (TRACKER_TASK_POOL (update_data->buffer),
 	                          update_data->task);
 	g_slice_free (UpdateData, update_data);
+}
+
+static void
+sparql_buffer_push_high_priority (TrackerSparqlBuffer *buffer,
+                                  TrackerTask         *task,
+                                  SparqlTaskData      *data)
+{
+	TrackerSparqlBufferPrivate *priv;
+	UpdateData *update_data;
+	const gchar *sparql = NULL;
+
+	priv = buffer->priv;
+
+	/* Task pool addition adds a reference (below) */
+	update_data = g_slice_new0 (UpdateData);
+	update_data->buffer = buffer;
+	update_data->task = task;
+
+	if (data->type == TASK_TYPE_SPARQL_STR) {
+		sparql = data->data.str;
+	} else if (data->type == TASK_TYPE_SPARQL) {
+		sparql = tracker_sparql_builder_get_result (data->data.builder);
+	}
+
+	tracker_task_pool_add (TRACKER_TASK_POOL (buffer), task);
+	tracker_sparql_connection_update_async (priv->connection,
+	                                        sparql,
+	                                        G_PRIORITY_HIGH,
+	                                        NULL,
+	                                        tracker_sparql_buffer_update_cb,
+	                                        update_data);
+}
+
+static void
+sparql_buffer_push_to_pool (TrackerSparqlBuffer *buffer,
+                            TrackerTask         *task)
+{
+	TrackerSparqlBufferPrivate *priv;
+
+	priv = buffer->priv;
+
+	if (tracker_task_pool_get_size (TRACKER_TASK_POOL (buffer)) == 0) {
+		reset_flush_timeout (buffer);
+	}
+
+	/* Task pool addition increments reference */
+	tracker_task_pool_add (TRACKER_TASK_POOL (buffer), task);
+
+	if (!priv->tasks) {
+		priv->tasks = g_ptr_array_new_with_free_func ((GDestroyNotify) tracker_task_unref);
+	}
+
+	/* We add a reference here because we unref when removed from
+	 * the GPtrArray. */
+	g_ptr_array_add (priv->tasks, tracker_task_ref (task));
+
+	if (tracker_task_pool_limit_reached (TRACKER_TASK_POOL (buffer))) {
+		tracker_sparql_buffer_flush (buffer, "SPARQL buffer limit reached");
+	} else if (priv->tasks->len > tracker_task_pool_get_limit (TRACKER_TASK_POOL (buffer)) / 2) {
+		/* We've filled half of the buffer, flush it as we receive more tasks */
+		tracker_sparql_buffer_flush (buffer, "SPARQL buffer half-full");
+	}
 }
 
 void
@@ -657,60 +647,29 @@ tracker_sparql_buffer_push (TrackerSparqlBuffer *buffer,
                             GAsyncReadyCallback  cb,
                             gpointer             user_data)
 {
-	TrackerSparqlBufferPrivate *priv;
 	SparqlTaskData *data;
 
 	g_return_if_fail (TRACKER_IS_SPARQL_BUFFER (buffer));
 	g_return_if_fail (task != NULL);
 
-	priv = buffer->priv;
-
+	/* NOTE: We don't own the task and if we want it we have to
+	 * reference it, each function below references task in
+	 * different ways.
+	 */
 	data = tracker_task_get_data (task);
-	data->result = g_simple_async_result_new (G_OBJECT (buffer),
-	                                          cb, user_data, NULL);
+
+	if (!data->async_task) {
+		data->async_task = g_task_new (buffer, NULL, cb, user_data);
+		g_task_set_task_data (data->async_task,
+		                      tracker_task_ref (task),
+		                      (GDestroyNotify) tracker_task_unref);
+	}
 
 	if (priority <= G_PRIORITY_HIGH &&
 	    data->type != TASK_TYPE_BULK) {
-		UpdateData *update_data;
-		const gchar *sparql = NULL;
-
-		/* High priority task */
-		update_data = g_slice_new0 (UpdateData);
-		update_data->buffer = buffer;
-		update_data->task = task;
-
-		if (data->type == TASK_TYPE_SPARQL_STR) {
-			sparql = data->data.str;
-		} else if (data->type == TASK_TYPE_SPARQL) {
-			sparql = tracker_sparql_builder_get_result (data->data.builder);
-		}
-
-		tracker_task_pool_add (TRACKER_TASK_POOL (buffer), task);
-		tracker_sparql_connection_update_async (priv->connection,
-		                                        sparql,
-		                                        G_PRIORITY_HIGH,
-		                                        NULL,
-		                                        tracker_sparql_buffer_update_cb,
-		                                        update_data);
+		sparql_buffer_push_high_priority (buffer, task, data);
 	} else {
-		if (tracker_task_pool_get_size (TRACKER_TASK_POOL (buffer)) == 0) {
-			reset_flush_timeout (buffer);
-		}
-
-		tracker_task_pool_add (TRACKER_TASK_POOL (buffer), task);
-
-		if (!priv->tasks) {
-			priv->tasks = g_ptr_array_new_with_free_func ((GDestroyNotify) tracker_task_unref);
-		}
-
-		g_ptr_array_add (priv->tasks, task);
-
-		if (tracker_task_pool_limit_reached (TRACKER_TASK_POOL (buffer))) {
-			tracker_sparql_buffer_flush (buffer, "SPARQL buffer limit reached");
-		} else if (priv->tasks->len > tracker_task_pool_get_limit (TRACKER_TASK_POOL (buffer)) / 2) {
-			/* We've filled half of the buffer, flush it as we receive more tasks */
-			tracker_sparql_buffer_flush (buffer, "SPARQL buffer half-full");
-		}
+		sparql_buffer_push_to_pool (buffer, task);
 	}
 }
 
@@ -755,8 +714,8 @@ sparql_task_data_free (SparqlTaskData *data)
 		break;
 	}
 
-	if (data->result) {
-		g_object_unref (data->result);
+	if (data->async_task) {
+		g_object_unref (data->async_task);
 	}
 
 	g_slice_free (SparqlTaskData, data);
@@ -808,4 +767,23 @@ tracker_sparql_task_new_bulk (GFile                *file,
 	                             flags);
 	return tracker_task_new (file, data,
 	                         (GDestroyNotify) sparql_task_data_free);
+}
+
+TrackerTask *
+tracker_sparql_buffer_push_finish (TrackerSparqlBuffer  *buffer,
+                                   GAsyncResult         *res,
+                                   GError              **error)
+{
+	TrackerTask *task;
+
+	g_return_val_if_fail (TRACKER_IS_SPARQL_BUFFER (buffer), NULL);
+	g_return_val_if_fail (G_IS_ASYNC_RESULT (res), NULL);
+	g_return_val_if_fail (!error || !*error, NULL);
+
+	task = g_task_propagate_pointer (G_TASK (res), error);
+
+	if (!task)
+		task = g_task_get_task_data (G_TASK (res));
+
+	return task;
 }

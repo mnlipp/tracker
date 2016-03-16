@@ -10,9 +10,6 @@ AM_CPPFLAGS =                                          \
 	-include config.h                              \
 	-DNO_LIBDBUS
 
-#
-# Daemon sources
-#
 libexec_PROGRAMS = tracker-store
 
 tracker_store_SOURCES =                                \
@@ -20,7 +17,6 @@ tracker_store_SOURCES =                                \
 	tracker-config.c                               \
 	tracker-dbus.vala                              \
 	tracker-events.c                               \
-	tracker-locale-change.c                        \
 	tracker-main.vala                              \
 	tracker-resources.vala                         \
 	tracker-statistics.vala                        \
@@ -32,7 +28,6 @@ tracker_store_SOURCES =                                \
 noinst_HEADERS =                                       \
 	tracker-config.h                               \
 	tracker-events.h                               \
-	tracker-locale-change.h                        \
 	tracker-store.h                                \
 	tracker-writeback.h
 
@@ -65,3 +60,71 @@ EXTRA_DIST = \
 	tracker-events.vapi \
 	tracker-locale-change.vapi \
 	tracker-writeback.vapi
+
+
+# DBus interfaces (XML files) and services
+configdir = $(datadir)/tracker
+config_DATA = \
+	tracker-backup.xml \
+	tracker-resources.xml \
+	tracker-statistics.xml \
+	tracker-status.xml
+
+%.service: %.service.in
+	@sed -e "s|@libexecdir[@]|${libexecdir}|" $< > $@
+
+servicedir = $(DBUS_SERVICES_DIR)
+service_DATA = org.freedesktop.Tracker1.service
+
+# Desktop files: First we fix the VERSION and libexecdir
+%.desktop.in: %.desktop.in.in
+	@sed -e "s|@libexecdir[@]|${libexecdir}|" \
+	     -e "s|@VERSION[@]|${VERSION}|" $< > $@
+
+autostartdir = $(sysconfdir)/xdg/autostart
+autostart_DATA = tracker-store.desktop
+
+@INTLTOOL_DESKTOP_RULE@
+
+# Configuration / GSettings
+gsettings_ENUM_NAMESPACE = org.freedesktop.Tracker
+gsettings_ENUM_FILES = $(top_srcdir)/src/libtracker-common/tracker-enums.h
+
+gsettings_SCHEMAS = $(schemalist) $(config)
+
+config = org.freedesktop.Tracker.Store.gschema.xml
+schemalist = org.freedesktop.Tracker.gschema.xml
+
+@INTLTOOL_XML_NOMERGE_RULE@
+
+@GSETTINGS_RULES@
+
+if HAVE_XSLTPROC
+DATE=`date +'%B %Y'`
+man_MANS = $(libexec_PROGRAMS).cfg.5
+else
+man_MANS =
+endif
+
+%.cfg.5: $(config)
+	$(AM_V_GEN)$(XSLTPROC) \
+	  --stringparam version "${VERSION}" \
+	  --stringparam current-date "${DATE}" \
+	  --stringparam config-file "$(@:.cfg.5=.cfg)" \
+	  $(top_srcdir)/docs/manpages/gsettings.xsl $^ > $@
+
+# Dist / Clean rules for all data
+CLEANFILES = \
+	$(autostart_DATA) \
+	$(autostart_DATA:.desktop=.desktop.in) \
+	$(service_DATA) \
+	$(gsettings_SCHEMAS) \
+	$(man_MANS)
+
+EXTRA_DIST += \
+	$(autostart_DATA:.desktop=.desktop.in.in) \
+	$(service_DATA:.service=.service.in) \
+	$(config_DATA) \
+	$(gsettings_SCHEMAS:.xml=.xml.in) \
+	$(man_MANS)
+

@@ -301,9 +301,9 @@ fix_orientation (const gchar *orientation)
 	} else if (orientation && g_ascii_strcasecmp (orientation, "2") == 0) {
 		return  "nfo:orientation-top-mirror";
 	} else if (orientation && g_ascii_strcasecmp (orientation, "3") == 0) {
-		return "nfo:orientation-bottom-mirror";
+		return "nfo:orientation-bottom";
 	} else if (orientation && g_ascii_strcasecmp (orientation, "4") == 0) {
-		return  "nfo:orientation-bottom";
+		return  "nfo:orientation-bottom-mirror";
 	} else if (orientation && g_ascii_strcasecmp (orientation, "5") == 0) {
 		return  "nfo:orientation-left-mirror";
 	} else if (orientation && g_ascii_strcasecmp (orientation, "6") == 0) {
@@ -573,7 +573,8 @@ iterate_simple (const gchar    *uri,
                                 */
                         } else if (!current_region->type && g_ascii_strcasecmp (propname, "mwg-rs:Type") == 0) {
                                 current_region->type = g_strdup (value);
-                        } else if (g_str_has_prefix (strrchr (path, ']') + 2, "mwg-rs:Extensions")) {
+                        } else if (!current_region->link_class && !current_region->link_uri &&
+                                   g_str_has_prefix (strrchr (path, ']') + 2, "mwg-rs:Extensions")) {
                                 current_region->link_class = g_strdup (propname);
                                 current_region->link_uri = g_strdup (value);
                         }

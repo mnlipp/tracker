@@ -39,9 +39,6 @@ endif
 #libwriteback_playlist_la_LIBADD = $(BUILD_LIBS) $(GLIB2_LIBS) $(TOTEM_PL_PARSER_LIBS)
 #endif
 
-#
-# Binaries
-#
 libexec_PROGRAMS = tracker-writeback
 
 tracker_writeback_SOURCES = \
@@ -62,3 +59,49 @@ tracker_writeback_LDADD = \
 	$(top_builddir)/src/libtracker-common/libtracker-common.la \
 	$(BUILD_LIBS) \
 	$(TRACKER_WRITEBACK_LIBS)
+
+# DBus interfaces (XML files) and services
+configdir = $(datadir)/tracker
+config_DATA = tracker-writeback.xml
+
+%.service: %.service.in
+	@sed -e "s|@libexecdir[@]|${libexecdir}|" $< > $@
+
+servicedir = $(DBUS_SERVICES_DIR)
+service_DATA = org.freedesktop.Tracker1.Writeback.service
+
+# Configuration / GSettings
+gsettings_ENUM_NAMESPACE = org.freedesktop.Tracker
+gsettings_ENUM_FILES = $(top_srcdir)/src/libtracker-common/tracker-enums.h
+
+gsettings_SCHEMAS = org.freedesktop.Tracker.Writeback.gschema.xml
+
+@INTLTOOL_XML_NOMERGE_RULE@
+
+@GSETTINGS_RULES@
+
+if HAVE_XSLTPROC
+DATE=`date +'%B %Y'`
+man_MANS = $(libexec_PROGRAMS).cfg.5
+else
+man_MANS =
+endif
+
+%.cfg.5: $(gsettings_SCHEMAS)
+	$(AM_V_GEN)$(XSLTPROC) \
+	  --stringparam version "${VERSION}" \
+	  --stringparam current-date "${DATE}" \
+	  --stringparam config-file "$(@:.cfg.5=.cfg)" \
+	  $(top_srcdir)/docs/manpages/gsettings.xsl $^ > $@
+
+# Dist / Clean rules for all data
+CLEANFILES = \
+	$(service_DATA) \
+	$(gsettings_SCHEMAS) \
+	$(man_MANS)
+
+EXTRA_DIST = \
+	$(service_DATA:.service=.service.in) \
+	$(config_DATA) \
+	$(gsettings_SCHEMAS:.xml=.xml.in) \
+	$(man_MANS)

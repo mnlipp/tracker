@@ -4,10 +4,8 @@ import subprocess
 import shutil
 import configuration as cfg
 
-import gobject
-import glib
-import dbus
-from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GObject
+from gi.repository import GLib
 import time
 
 import options
@@ -29,7 +27,7 @@ TEST_ENV_VARS = {  "TRACKER_DISABLE_MEEGOTOUCH_LOCALE": "",
 EXTRA_DIRS = [os.path.join (cfg.TEST_TMP_DIR, "data", "tracker"),
               os.path.join (cfg.TEST_TMP_DIR, "cache", "tracker")]
 
-REASONABLE_TIMEOUT = 30
+REASONABLE_TIMEOUT = 5
 
 class UnableToBootException (Exception):
     pass
@@ -37,14 +35,15 @@ class UnableToBootException (Exception):
 
 class TrackerSystemAbstraction:
 
-    def set_up_environment (self, gsettings, ontodir):
+    def set_up_environment (self, settings, ontodir):
         """
         Sets up the XDG_*_HOME variables and make sure the directories exist
 
-        gsettings is a list of triplets (schema, key, value) that will be set/unset in gsetting
+        Settings should be a dict mapping schema names to dicts that hold the
+        settings that should be changed in those schemas. The contents dicts
+        should map key->value, where key is a key name and value is a suitable
+        GLib.Variant instance.
         """
-
-        assert not gsettings or type(gsettings) is list 
 
         helpers.log ("[Conf] Setting test environment...")
 
@@ -65,36 +64,23 @@ class TrackerSystemAbstraction:
             os.environ [var] = value
 
         # Previous loop should have set DCONF_PROFILE to the test location
-        if gsettings:
-            self.dconf = DConfClient ()
-            self.dconf.reset ()
-            for (schema, key, value) in gsettings:
-                self.dconf.write (schema, key, value)
+        if settings is not None:
+            self._apply_settings(settings)
 
         helpers.log ("[Conf] environment ready")
 
-    def unset_up_environment (self):
-        """
-        Unset the XDG_*_HOME variables from the environment
-        """
-        for var, directory in TEST_ENV_VARS.iteritems ():
-            if os.environ.has_key (var):
-                del os.environ [var]
-
-        for var, directory in TEST_ENV_DIRS.iteritems ():
-            if os.environ.has_key (var):
-                del os.environ [var]
-
-        if (os.environ.has_key ("TRACKER_DB_ONTOLOGIES_DIR")):
-            del os.environ ["TRACKER_DB_ONTOLOGIES_DIR"]
-
+    def _apply_settings(self, settings):
+        for schema_name, contents in settings.iteritems():
+            dconf = DConfClient(schema_name)
+            dconf.reset()
+            for key, value in contents.iteritems():
+                dconf.write(key, value)
 
     def tracker_store_testing_start (self, confdir=None, ontodir=None):
         """
         Stops any previous instance of the store, calls set_up_environment,
         and starts a new instances of the store
         """
-        self.__stop_tracker_processes ()
         self.set_up_environment (confdir, ontodir)
 
         self.store = helpers.StoreHelper ()
@@ -116,7 +102,7 @@ class TrackerSystemAbstraction:
             os.environ ["TRACKER_DB_ONTOLOGIES_DIR"] = ontodir
         try:
             self.store.start ()
-        except dbus.DBusException, e:
+        except GLib.Error:
             raise UnableToBootException ("Unable to boot the store \n(" + str(e) + ")")
 
     def tracker_store_prepare_journal_replay (self):
@@ -148,11 +134,10 @@ class TrackerSystemAbstraction:
 
     def tracker_store_testing_stop (self):
         """
-        Stops a running tracker-store and unset all the XDG_*_HOME vars
+        Stops a running tracker-store
         """
         assert self.store
         self.store.stop ()
-        self.unset_up_environment ()
 
 
     def tracker_miner_fs_testing_start (self, confdir=None):
@@ -160,7 +145,6 @@ class TrackerSystemAbstraction:
         Stops any previous instance of the store and miner, calls set_up_environment,
         and starts a new instance of the store and miner-fs
         """
-        self.__stop_tracker_processes ()
         self.set_up_environment (confdir, None)
 
         # Start also the store. DBus autoactivation ignores the env variables.
@@ -173,23 +157,13 @@ class TrackerSystemAbstraction:
         self.miner_fs = helpers.MinerFsHelper ()
         self.miner_fs.start ()
 
-    def tracker_miner_fs_wait_for_idle (self, timeout=REASONABLE_TIMEOUT):
-        """
-        Copy the files physically in the filesyste and wait for the miner to complete the work
-        """
-        self.miner_fs.wait_for_idle (timeout)
-
-
     def tracker_miner_fs_testing_stop (self):
         """
-        Stops the miner-fs and store running and unset all the XDG_*_HOME vars
+        Stops the extractor, miner-fs and store running
         """
+        self.extractor.stop ()
         self.miner_fs.stop ()
         self.store.stop ()
-
-        self.__stop_tracker_processes ()
-        self.unset_up_environment ()
-
 
     def tracker_writeback_testing_start (self, confdir=None):
         # Start the miner-fs (and store) and then the writeback process
@@ -210,15 +184,6 @@ class TrackerSystemAbstraction:
         # This will stop all miner-fs, store and writeback
         self.tracker_writeback_testing_stop ()
 
-    #
-    # Private API
-    #
-    def __stop_tracker_processes (self):
-        control_binary = os.path.join (cfg.BINDIR, "tracker-control")
-        FNULL = open('/dev/null', 'w')
-        subprocess.call ([control_binary, "-t"], stdout=FNULL)
-        time.sleep (1)
-
     def __recreate_directory (self, directory):
         if (os.path.exists (directory)):
             shutil.rmtree (directory)
@@ -231,14 +196,14 @@ if __name__ == "__main__":
     def destroy_the_world (a):
         a.tracker_store_testing_stop ()
         print "   stopped"
-        gtk.main_quit()
+        Gtk.main_quit()
 
     print "-- Starting store --"
     a = TrackerSystemAbstraction ()
     a.tracker_store_testing_start ()
     print "   started, waiting 5 sec. to stop it"
-    glib.timeout_add_seconds (5, destroy_the_world, a)
-    gtk.main ()
+    GLib.timeout_add_seconds (5, destroy_the_world, a)
+    Gtk.main ()
 
     print "-- Starting miner-fs --"
     b = TrackerMinerFsLifeCycle ()

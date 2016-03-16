@@ -31,15 +31,17 @@
  */
 
 // Convenience, hidden in the documentation
-public const string TRACKER_DBUS_SERVICE = "org.freedesktop.Tracker1";
-public const string TRACKER_DBUS_INTERFACE_RESOURCES = TRACKER_DBUS_SERVICE + ".Resources";
-public const string TRACKER_DBUS_OBJECT_RESOURCES = "/org/freedesktop/Tracker1/Resources";
-public const string TRACKER_DBUS_INTERFACE_STATISTICS = TRACKER_DBUS_SERVICE + ".Statistics";
-public const string TRACKER_DBUS_OBJECT_STATISTICS = "/org/freedesktop/Tracker1/Statistics";
-public const string TRACKER_DBUS_INTERFACE_STATUS = TRACKER_DBUS_SERVICE + ".Status";
-public const string TRACKER_DBUS_OBJECT_STATUS = "/org/freedesktop/Tracker1/Status";
-public const string TRACKER_DBUS_INTERFACE_STEROIDS = TRACKER_DBUS_SERVICE + ".Steroids";
-public const string TRACKER_DBUS_OBJECT_STEROIDS = "/org/freedesktop/Tracker1/Steroids";
+namespace Tracker {
+	public const string DBUS_SERVICE = "org.freedesktop.Tracker1";
+	public const string DBUS_INTERFACE_RESOURCES = DBUS_SERVICE + ".Resources";
+	public const string DBUS_OBJECT_RESOURCES = "/org/freedesktop/Tracker1/Resources";
+	public const string DBUS_INTERFACE_STATISTICS = DBUS_SERVICE + ".Statistics";
+	public const string DBUS_OBJECT_STATISTICS = "/org/freedesktop/Tracker1/Statistics";
+	public const string DBUS_INTERFACE_STATUS = DBUS_SERVICE + ".Status";
+	public const string DBUS_OBJECT_STATUS = "/org/freedesktop/Tracker1/Status";
+	public const string DBUS_INTERFACE_STEROIDS = DBUS_SERVICE + ".Steroids";
+	public const string DBUS_OBJECT_STEROIDS = "/org/freedesktop/Tracker1/Steroids";
+}
 
 /**
  * TrackerSparqlError:
@@ -218,13 +220,17 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 * Executes a SPARQL query on. The API call is completely synchronous, so
 	 * it may block.
 	 *
+	 * The @sparql query should be built with #TrackerSparqlBuilder, or
+	 * its parts correctly escaped using tracker_sparql_escape_string(),
+	 * otherwise SPARQL injection is possible.
+	 *
 	 * Returns: a #TrackerSparqlCursor if results were found, #NULL otherwise.
 	 * On error, #NULL is returned and the @error is set accordingly.
 	 * Call g_object_unref() on the returned cursor when no longer needed.
 	 *
 	 * Since: 0.10
 	 */
-	public abstract Cursor query (string sparql, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError;
+	public abstract Cursor query (string sparql, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError;
 
 	/**
 	 * tracker_sparql_connection_query_finish:
@@ -254,7 +260,7 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 *
 	 * Since: 0.10
 	 */
-	public async abstract Cursor query_async (string sparql, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError;
+	public async abstract Cursor query_async (string sparql, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError;
 
 	/**
 	 * tracker_sparql_connection_update:
@@ -267,9 +273,13 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 * Executes a SPARQL update. The API call is completely
 	 * synchronous, so it may block.
 	 *
+	 * The @sparql query should be built with #TrackerSparqlBuilder, or
+	 * its parts correctly escaped using tracker_sparql_escape_string(),
+	 * otherwise SPARQL injection is possible.
+	 *
 	 * Since: 0.10
 	 */
-	public virtual void update (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError {
+	public virtual void update (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError {
 		warning ("Interface 'update' not implemented");
 	}
 
@@ -298,7 +308,7 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 *
 	 * Since: 0.10
 	 */
-	public async virtual void update_async (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError {
+	public async virtual void update_async (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError {
 		warning ("Interface 'update_async' not implemented");
 	}
 
@@ -363,7 +373,7 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 *
 	 * Since: 0.10
 	 */
-	public async virtual GenericArray<Error?>? update_array_async (string[] sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError {
+	public async virtual GenericArray<Error?>? update_array_async (string[] sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError {
 		warning ("Interface 'update_array_async' not implemented");
 		return null;
 	}
@@ -379,12 +389,16 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 * Executes a SPARQL update and returns the URNs of the generated nodes,
 	 * if any. The API call is completely synchronous, so it may block.
 	 *
+	 * The @sparql query should be built with #TrackerSparqlBuilder, or
+	 * its parts correctly escaped using tracker_sparql_escape_string(),
+	 * otherwise SPARQL injection is possible.
+	 *
 	 * Returns: a #GVariant with the generated URNs, which should be freed with
 	 * g_variant_unref() when no longer used.
 	 *
 	 * Since: 0.10
 	 */
-	public virtual GLib.Variant? update_blank (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError {
+	public virtual GLib.Variant? update_blank (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError {
 		warning ("Interface 'update_blank' not implemented");
 		return null;
 	}
@@ -418,7 +432,7 @@ public abstract class Tracker.Sparql.Connection : Object {
 	 *
 	 * Since: 0.10
 	 */
-	public async virtual GLib.Variant? update_blank_async (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, IOError, DBusError {
+	public async virtual GLib.Variant? update_blank_async (string sparql, int priority = GLib.Priority.DEFAULT, Cancellable? cancellable = null) throws Sparql.Error, GLib.Error, GLib.IOError, DBusError {
 		warning ("Interface 'update_blank_async' not implemented");
 		return null;
 	}

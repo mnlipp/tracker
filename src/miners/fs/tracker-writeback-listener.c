@@ -21,7 +21,7 @@
 
 #include <libtracker-common/tracker-dbus.h>
 #include <libtracker-sparql/tracker-sparql.h>
-#include <libtracker-miner/tracker-miner-dbus.h>
+#include <libtracker-miner/tracker-miner.h>
 
 #include "tracker-writeback-listener.h"
 
@@ -190,7 +190,7 @@ writeback_listener_initable_init (GInitable    *initable,
 		return FALSE;
 	}
 
-	priv->d_connection = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &internal_error);
+	priv->d_connection = g_bus_get_sync (TRACKER_IPC_BUS, NULL, &internal_error);
 
 	if (internal_error) {
 		g_propagate_error (error, internal_error);
@@ -372,7 +372,7 @@ rdf_types_to_uris_cb (GObject      *object,
 		                            "<%s> a nfo:FileDataObject . "
 		                            "<%s> ?predicate ?object ; nie:url ?url . "
 		                            "?predicate tracker:writeback true . "
-		                            "FILTER (NOT EXISTS { GRAPH <"TRACKER_MINER_FS_GRAPH_URN"> "
+		                            "FILTER (NOT EXISTS { GRAPH <" TRACKER_OWN_GRAPH_URN "> "
 		                              "{ <%s> ?predicate ?object } }) } ",
 		                         subject, subject, subject, subject);
 

@@ -1,3 +1,5 @@
+SUBDIRS = icons
+
 bin_PROGRAMS = tracker-needle
 
 AM_VALAFLAGS = \
@@ -41,14 +43,38 @@ ui_DATA = tracker-needle.ui
 desktopdir = $(datadir)/applications
 desktop_DATA = tracker-needle.desktop
 
+appdatadir = $(datadir)/appdata
+appdata_DATA = tracker-needle.appdata.xml
+
 BUILT_SOURCES = \
 	tracker_needle_vala.stamp
 
+#Desktop files
+%.desktop.in: %.desktop.in.in
+	@sed -e "s|@VERSION[@]|${VERSION}|" $< > $@
+
+#GSettings
+gsettings_ENUM_NAMESPACE = org.freedesktop.Tracker
+gsettings_ENUM_FILES = $(top_srcdir)/src/libtracker-common/tracker-enums.h
+
+gsettings_SCHEMAS = $(schemalist)
+
+schemalist = org.freedesktop.Tracker.Needle.gschema.xml
+
+@INTLTOOL_XML_NOMERGE_RULE@
+
+@GSETTINGS_RULES@
+
+# Dist / Clean rules for all data
 CLEANFILES = \
-	$(desktop_DATA)
+	$(desktop_DATA:.desktop=.desktop.in) \
+	$(desktop_DATA) \
+	$(gsettings_SCHEMAS)
 
 EXTRA_DIST = \
+	$(desktop_DATA:.desktop=.desktop.in.in) \
 	$(ui_DATA) \
 	$(desktop_DATA) \
-	config.vapi
-
+	$(appdata_DATA) \
+	config.vapi \
+	$(gsettings_SCHEMAS:.xml=.xml.in)

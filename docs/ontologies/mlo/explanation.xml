@@ -30,7 +30,7 @@
        </para>
      </listitem>
    </orderedlist>
-   <para>These three representations are not exclusive, but is responsability of the applications to keep the data consistent.</para>
+   <para>These three representations are not exclusive, but is responsibility of the applications to keep the data consistent.</para>
    <para>Some places in the space has an special meaning, E.G. premises, buildings or services. This fact is represented in the ontology with the class <link linkend="mlo-Landmark">mlo:Landmark</link>. The title and description of the Landmark itself can be set using the <link linkend="nie-InformationElement">nie:InformationElement</link> properties (<link linkend="nie-title">nie:title</link>, <link linkend="nie-description">nie:description</link>, ...). A location is linked with a landmark with the property <link linkend="mlo-location">mlo:location</link> inherited from the superclass Information Element.</para>
    <para>Landmark can be grouped in categories. For this reason, the ontology provides a property <link linkend="mlo-belongsToCategory">mlo:belongsToCategory</link> that links a Landmark with the class <link linkend="mlo-LandmarkCategory">mlo:LandmarkCategory</link> . The ontology includes also a predefined set of instances, very common an a de-facto standard in the industry.</para>
  </refsect2>
@@ -54,14 +54,5 @@
    <para>A box is considered as a <emphasis>2 dimensions</emphasis> area orientated to the north, aligned to parallels and meridians. The area is defined with two points: the southern east point (down left corner, in the <link linkend="mlo-bbSouthEast">mlo:bbSouthEast</link> property) and northern western point (upper right corner, in the <link linkend="mlo-bbNorthWest">mlo:bbNorthWest</link> property).</para>
 
    <para><link linkend="mlo-LandmarkCategory">mlo:LandmarkCategory</link> has a property <link linkend="mlo-isRemovable">mlo:isRemovable</link> to mark is the category is predefined and shouldn't be deleted by the applications. Tracker (and probably other backends) doesn't enforce applications to respect this value, but consider it a gentleman agreement.</para>
- </refsect2>
-
-
- <refsect2 id="mlo-graphical-overview">
-  <figure id="mlo-ontology-graph">
-  <title>Graphical Overview</title>
-    <graphic fileref="location-overview.png" format="PNG"></graphic>
-  </figure>
-  <para>Notation defined <link linkend="ontology-notation">in this page</link></para>
  </refsect2>
 </section>

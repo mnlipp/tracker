@@ -33,10 +33,8 @@
 
 #include <glib/gstdio.h>
 
-#include <libtracker-common/tracker-date-time.h>
-#include <libtracker-common/tracker-file-utils.h>
-#include <libtracker-common/tracker-utils.h>
-#include <libtracker-common/tracker-locale.h>
+#include <libtracker-common/tracker-common.h>
+#include <libtracker-common/tracker-parser-sha1.h>
 
 #if HAVE_TRACKER_FTS
 #include <libtracker-fts/tracker-fts.h>
@@ -68,6 +66,7 @@
 #define FIRST_INDEX_FILENAME          "first-index.txt"
 #define LAST_CRAWL_FILENAME           "last-crawl.txt"
 #define NEED_MTIME_CHECK_FILENAME     "no-need-mtime-check.txt"
+#define PARSER_SHA1_FILENAME          "parser-sha1.txt"
 
 typedef enum {
 	TRACKER_DB_LOCATION_DATA_DIR,
@@ -681,6 +680,7 @@ tracker_db_manager_locale_changed (void)
 
 	g_free (db_locale);
 	g_free (current_locale);
+
 	return changed;
 }
 
@@ -691,7 +691,7 @@ tracker_db_manager_set_current_locale (void)
 
 	/* Get current collation locale */
 	current_locale = tracker_locale_get (TRACKER_LOCALE_COLLATE);
-	g_message ("Changing db locale to: '%s'", current_locale);
+	g_message ("Saving DB locale as: '%s'", current_locale);
 	db_set_locale (current_locale);
 	g_free (current_locale);
 }
@@ -1792,4 +1792,51 @@ void
 tracker_db_manager_unlock (void)
 {
 	g_mutex_unlock (&global_mutex);
+}
+
+inline static gchar *
+get_parser_sha1_filename (void)
+{
+	return g_build_filename (g_get_user_cache_dir (),
+	                         "tracker",
+	                         PARSER_SHA1_FILENAME,
+	                         NULL);
+}
+
+
+gboolean
+tracker_db_manager_get_tokenizer_changed (void)
+{
+	gchar *filename, *sha1;
+	gboolean changed = TRUE;
+
+	filename = get_parser_sha1_filename ();
+
+	if (g_file_get_contents (filename, &sha1, NULL, NULL)) {
+		changed = strcmp (sha1, TRACKER_PARSER_SHA1) != 0;
+		g_free (sha1);
+	}
+
+	g_free (filename);
+
+	return changed;
+}
+
+void
+tracker_db_manager_tokenizer_update (void)
+{
+	GError *error = NULL;
+	gchar *filename;
+
+	filename = get_parser_sha1_filename ();
+
+	if (!g_file_set_contents (filename, TRACKER_PARSER_SHA1, -1, &error)) {
+		g_warning ("The file '%s' could not be rewritten by Tracker and "
+		           "should be deleted manually. Not doing so will result "
+		           "in Tracker rebuilding its FTS tokens on every startup. "
+		           "The error received was: '%s'", filename, error->message);
+		g_error_free (error);
+	}
+
+	g_free (filename);
 }

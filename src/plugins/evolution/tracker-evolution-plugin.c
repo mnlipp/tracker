@@ -80,10 +80,10 @@
 #include <libedataserver/eds-version.h>
 
 /* Back to sanity */
+#include <libtracker-sparql/tracker-ontologies.h>
 #include <libtracker-sparql/tracker-sparql.h>
 
 #include <libtracker-common/tracker-date-time.h>
-#include <libtracker-common/tracker-ontologies.h>
 #include <libtracker-common/tracker-utils.h>
 #include <libtracker-common/tracker-type-utils.h>
 
@@ -2492,7 +2492,7 @@ miner_start_watching (TrackerMiner *miner)
 {
 	TrackerMinerEvolutionPrivate *priv = TRACKER_MINER_EVOLUTION_GET_PRIVATE (miner);
 
-	priv->watch_name_id = g_bus_watch_name (G_BUS_TYPE_SESSION,
+	priv->watch_name_id = g_bus_watch_name (TRACKER_IPC_BUS,
 	                                        TRACKER_SERVICE,
 	                                        G_BUS_NAME_WATCHER_FLAGS_NONE,
 	                                        on_tracker_store_appeared,

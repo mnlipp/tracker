@@ -46,12 +46,22 @@ typedef enum {
 } OPFTagType;
 
 typedef struct {
+	gchar *graph;
 	TrackerSparqlBuilder *preupdate;
 	TrackerSparqlBuilder *metadata;
+	gchar *uri;
+
 	OPFTagType element;
 	GList *pages;
-	guint in_metadata : 1;
-	guint in_manifest : 1;
+	guint in_metadata         : 1;
+	guint in_manifest         : 1;
+	guint has_publisher       : 1;
+	guint has_title           : 1;
+	guint has_content_created : 1;
+	guint has_language        : 1;
+	guint has_subject         : 1;
+	guint has_description     : 1;
+	guint has_identifier      : 1;
 	gchar *savedstring;
 } OPFData;
 
@@ -61,18 +71,21 @@ typedef struct {
 } OPFContentData;
 
 static inline OPFData *
-opf_data_new (TrackerSparqlBuilder *preupdate,
-              TrackerSparqlBuilder *metadata)
+opf_data_new (TrackerExtractInfo *info)
 {
-	OPFData *data = g_new0 (OPFData, 1);
+	OPFData *data = g_slice_new0 (OPFData);
+	TrackerSparqlBuilder *builder;
+	GFile *file;
 
-	if (metadata) {
-		data->metadata = g_object_ref (metadata);
-	}
+	file = tracker_extract_info_get_file (info);
+	builder = tracker_extract_info_get_preupdate_builder (info);
+	data->preupdate = g_object_ref (builder);
 
-	if (preupdate) {
-		data->preupdate = g_object_ref (preupdate);
-	}
+	builder = tracker_extract_info_get_metadata_builder (info);
+	data->metadata = g_object_ref (builder);
+
+	data->graph = g_strdup (tracker_extract_info_get_graph (info));
+	data->uri = g_file_get_uri (file);
 
 	return data;
 }
@@ -100,6 +113,9 @@ opf_data_free (OPFData *data)
 	g_list_foreach (data->pages, (GFunc) g_free, NULL);
 	g_list_free (data->pages);
 
+	g_free (data->graph);
+	g_free (data->uri);
+
 	if (data->metadata) {
 		g_object_unref (data->metadata);
 	}
@@ -108,7 +124,7 @@ opf_data_free (OPFData *data)
 		g_object_unref (data->preupdate);
 	}
 
-	g_free (data);
+	g_slice_free (OPFData, data);
 }
 
 /* Methods to parse the container.xml file
@@ -269,15 +285,21 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 
 	switch (data->element) {
 	case OPF_TAG_TYPE_PUBLISHER:
-		tracker_sparql_builder_predicate (data->metadata, "nco:publisher");
+		if (data->has_publisher) {
+			g_warning ("Avoiding additional publisher (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_publisher = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nco:publisher");
 
-		tracker_sparql_builder_object_blank_open (data->metadata);
-		tracker_sparql_builder_predicate (data->metadata, "a");
-		tracker_sparql_builder_object (data->metadata, "nco:Contact");
+			tracker_sparql_builder_object_blank_open (data->metadata);
+			tracker_sparql_builder_predicate (data->metadata, "a");
+			tracker_sparql_builder_object (data->metadata, "nco:Contact");
 
-		tracker_sparql_builder_predicate (data->metadata, "nco:fullname");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
-		tracker_sparql_builder_object_blank_close (data->metadata);
+			tracker_sparql_builder_predicate (data->metadata, "nco:fullname");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+			tracker_sparql_builder_object_blank_close (data->metadata);
+		}
 		break;
 	case OPF_TAG_TYPE_AUTHOR:
 	case OPF_TAG_TYPE_EDITOR:
@@ -287,7 +309,7 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 		const gchar *fullname = NULL;
 		gchar *role_uri = NULL;
 		const gchar *role_str = NULL;
-		gint i, j, len;
+		gint i, j = 0, len;
 
 		fname = NULL;
 		gname = NULL;
@@ -339,7 +361,6 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 			/* <given name> <other name> <family name> */
 			g_debug ("Parsing name, no 'opf:file-as' found: '%s'", text);
 
-			j = 0;
 			len = strlen (text);
 
 			for (i = 0; i < len; i++) {
@@ -373,29 +394,37 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 		}
 
 		/* Role details */
+		role_uri = tracker_sparql_escape_uri_printf ("urn:artist:%s", fullname);
+
 		if (data->element == OPF_TAG_TYPE_AUTHOR) {
-			role_uri = tracker_sparql_escape_uri_printf ("urn:role:author");
-			role_str = "Author";
-		} else if (data->element == OPF_TAG_TYPE_EDITOR) {
-			role_uri = tracker_sparql_escape_uri_printf ("urn:role:editor");
-			role_str = "Editor";
+			role_str = "nco:creator";
+		} else if (data->element == OPF_TAG_TYPE_EDITOR && !data->has_publisher) {
+			/* Should this be nco:contributor ?
+			 * 'Editor' is a bit vague here.
+			 */
+			role_str = "nco:publisher";
 		} else if (data->element == OPF_TAG_TYPE_ILLUSTRATOR) {
-			role_uri = tracker_sparql_escape_uri_printf ("urn:role:illustrator");
-			role_str = "Illustrator";
+			/* There is no illustrator class, using contributor */
+			role_str = "nco:contributor";
 		} else {
 			g_assert ("Unknown role");
 		}
 
 		if (role_uri) {
-			tracker_sparql_builder_insert_silent_open (data->preupdate, NULL);
+			tracker_sparql_builder_insert_open (data->preupdate, NULL);
+			if (data->graph) {
+				tracker_sparql_builder_graph_open (data->preupdate, data->graph);
+			}
 
 			tracker_sparql_builder_subject_iri (data->preupdate, role_uri);
-
 			tracker_sparql_builder_predicate (data->preupdate, "a");
-			tracker_sparql_builder_object (data->preupdate, "nco:Role");
-			tracker_sparql_builder_predicate (data->preupdate, "nco:role");
-			tracker_sparql_builder_object_unvalidated (data->preupdate, role_str);
+			tracker_sparql_builder_object (data->preupdate, "nmm:Artist");
+			tracker_sparql_builder_predicate (data->preupdate, "nmm:artistName");
+			tracker_sparql_builder_object_unvalidated (data->preupdate, fullname);
 
+			if (data->graph) {
+				tracker_sparql_builder_graph_close (data->preupdate);
+			}
 			tracker_sparql_builder_insert_close (data->preupdate);
 		}
 
@@ -420,13 +449,13 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 		}
 
 		if (oname) {
-			tracker_sparql_builder_predicate (data->metadata, "nco:nameOther");
+			tracker_sparql_builder_predicate (data->metadata, "nco:nameAdditional");
 			tracker_sparql_builder_object_unvalidated (data->metadata, oname);
 			g_free (oname);
 		}
 
 		if (role_uri) {
-			tracker_sparql_builder_predicate (data->metadata, "nco:role");
+			tracker_sparql_builder_predicate (data->metadata, role_str);
 			tracker_sparql_builder_object_iri (data->metadata, role_uri);
 			g_free (role_uri);
 		}
@@ -436,36 +465,74 @@ opf_xml_text_handler (GMarkupParseContext   *context,
 		break;
 	}
 	case OPF_TAG_TYPE_TITLE:
-		tracker_sparql_builder_predicate (data->metadata, "nie:title");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		if (data->has_title) {
+			g_warning ("Avoiding additional title (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_title = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:title");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		}
 		break;
 	case OPF_TAG_TYPE_CREATED: {
-		gchar *date = tracker_date_guess (text);
+		if (data->has_content_created) {
+			g_warning ("Avoiding additional creation time (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			gchar *date = tracker_date_guess (text);
 
-		tracker_sparql_builder_predicate (data->metadata, "nie:contentCreated");
-		tracker_sparql_builder_object_unvalidated (data->metadata, date);
-		g_free (date);
+			if (date) {
+				data->has_content_created = TRUE;
+				tracker_sparql_builder_predicate (data->metadata, "nie:contentCreated");
+				tracker_sparql_builder_object_unvalidated (data->metadata, date);
+				g_free (date);
+			} else {
+				g_warning ("Could not parse creation time (%s) in EPUB '%s'",
+				           text, data->uri);
+			}
+		}
 		break;
 	}
 	case OPF_TAG_TYPE_LANGUAGE:
-		tracker_sparql_builder_predicate (data->metadata, "nie:language");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		if (data->has_language) {
+			g_warning ("Avoiding additional language (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_language = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:language");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		}
 		break;
 	case OPF_TAG_TYPE_SUBJECT:
-		tracker_sparql_builder_predicate (data->metadata, "nie:subject");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		if (data->has_subject) {
+			g_warning ("Avoiding additional subject (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_subject = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:subject");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		}
 		break;
 	case OPF_TAG_TYPE_DESCRIPTION:
-		tracker_sparql_builder_predicate (data->metadata, "nie:description");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		if (data->has_description) {
+			g_warning ("Avoiding additional description (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_description = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:description");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		}
 		break;
 	case OPF_TAG_TYPE_UUID:
-		tracker_sparql_builder_predicate (data->metadata, "nie:identifier");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
-		break;
 	case OPF_TAG_TYPE_ISBN:
-		tracker_sparql_builder_predicate (data->metadata, "nie:identifier");
-		tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		if (data->has_identifier) {
+			g_warning ("Avoiding additional identifier (%s) in EPUB '%s'",
+			           text, data->uri);
+		} else {
+			data->has_identifier = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:identifier");
+			tracker_sparql_builder_object_unvalidated (data->metadata, text);
+		}
 		break;
 	/* case OPF_TAG_TYPE_RATING: */
 	case OPF_TAG_TYPE_UNKNOWN:
@@ -539,7 +606,6 @@ extract_opf_contents (const gchar *uri,
                       GList       *content_files)
 {
 	OPFContentData content_data = { 0 };
-	GMarkupParseContext *context;
 	TrackerConfig *config;
 	GError *error = NULL;
 	GList *l;
@@ -550,7 +616,6 @@ extract_opf_contents (const gchar *uri,
 	};
 
 	config = tracker_main_get_config ();
-	context = g_markup_parse_context_new (&xml_parser, 0, &content_data, NULL);
 
 	content_data.contents = g_string_new ("");
 	content_data.limit = (gsize) tracker_config_get_max_bytes (config);
@@ -558,18 +623,23 @@ extract_opf_contents (const gchar *uri,
 	g_debug ("Extracting up to %" G_GSIZE_FORMAT " bytes of content", content_data.limit);
 
 	for (l = content_files; l; l = l->next) {
+		GMarkupParseContext *context;
 		gchar *path;
+
+		context = g_markup_parse_context_new (&xml_parser, 0, &content_data, NULL);
 
 		/* Page file is relative to OPF file location */
 		path = g_build_filename (content_prefix, l->data, NULL);
 		tracker_gsf_parse_xml_in_zip (uri, path, context, &error);
-		g_free (path);
 
 		if (error) {
-			g_warning ("Error extracting EPUB contents: %s\n",
-			           error->message);
-			break;
+			g_warning ("Error extracting EPUB contents (%s): %s",
+				   path, error->message);
+			g_clear_error (&error);
 		}
+		g_free (path);
+
+		g_markup_parse_context_free (context);
 
 		if (content_data.limit <= 0) {
 			/* Reached plain text extraction limit */
@@ -577,16 +647,13 @@ extract_opf_contents (const gchar *uri,
 		}
 	}
 
-	g_markup_parse_context_free (context);
-
 	return g_string_free (content_data.contents, FALSE);
 }
 
 static gboolean
 extract_opf (const gchar          *uri,
              const gchar          *opf_path,
-             TrackerSparqlBuilder *preupdate,
-             TrackerSparqlBuilder *metadata)
+             TrackerExtractInfo   *info)
 {
 	GMarkupParseContext *context;
 	OPFData *data = NULL;
@@ -601,10 +668,10 @@ extract_opf (const gchar          *uri,
 
 	g_debug ("Extracting OPF file contents from EPUB '%s'", uri);
 
-	data = opf_data_new (preupdate, metadata);
+	data = opf_data_new (info);
 
-	tracker_sparql_builder_predicate (metadata, "a");
-	tracker_sparql_builder_object (metadata, "nfo:TextDocument");
+	tracker_sparql_builder_predicate (data->metadata, "a");
+	tracker_sparql_builder_object (data->metadata, "nfo:EBook");
 
 	/* Create parsing context */
 	context = g_markup_parse_context_new (&opf_parser, 0, data, NULL);
@@ -628,8 +695,8 @@ extract_opf (const gchar          *uri,
 	g_free (dirname);
 
 	if (contents && *contents) {
-		tracker_sparql_builder_predicate (metadata, "nie:plainTextContent");
-		tracker_sparql_builder_object_unvalidated (metadata, contents);
+		tracker_sparql_builder_predicate (data->metadata, "nie:plainTextContent");
+		tracker_sparql_builder_object_unvalidated (data->metadata, contents);
 	}
 
 	opf_data_free (data);
@@ -654,9 +721,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		return FALSE;
 	}
 
-	extract_opf (uri, opf_path,
-	             tracker_extract_info_get_preupdate_builder (info),
-	             tracker_extract_info_get_metadata_builder (info));
+	extract_opf (uri, opf_path, info);
 	g_free (opf_path);
 	g_free (uri);
 

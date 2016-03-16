@@ -24,28 +24,25 @@
 #include <time.h>
 #include <stdlib.h>
 #include <locale.h>
-#include <signal.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <glib.h>
 #include <glib-object.h>
+#include <glib-unix.h>
 #include <glib/gi18n.h>
+#include <glib/gprintf.h>
 #include <gio/gio.h>
 
 #ifndef G_OS_WIN32
 #include <sys/resource.h>
 #endif
 
+#ifdef HAVE_LIBMEDIAART
 #include <libmediaart/mediaart.h>
+#endif
 
-#include <libtracker-common/tracker-log.h>
-#include <libtracker-common/tracker-dbus.h>
-#include <libtracker-common/tracker-os-dependant.h>
-#include <libtracker-common/tracker-ioprio.h>
-#include <libtracker-common/tracker-locale.h>
-#include <libtracker-common/tracker-sched.h>
+#include <libtracker-common/tracker-common.h>
 
 #include <libtracker-data/tracker-db-manager.h>
 
@@ -69,14 +66,11 @@
 	"\n" \
 	"  http://www.gnu.org/licenses/gpl.txt\n"
 
-#define QUIT_TIMEOUT 30 /* 1/2 minutes worth of seconds */
-
 static GMainLoop *main_loop;
 
 static gint verbosity = -1;
 static gchar *filename;
 static gchar *mime_type;
-static gboolean force_internal_extractors;
 static gchar *force_module;
 static gboolean version;
 
@@ -96,10 +90,6 @@ static GOptionEntry entries[] = {
 	  G_OPTION_ARG_STRING, &mime_type,
 	  N_("MIME type for file (if not provided, this will be guessed)"),
 	  N_("MIME") },
-	{ "force-internal-extractors", 'i', 0,
-	  G_OPTION_ARG_NONE, &force_internal_extractors,
-	  N_("Force internal extractors over 3rd parties like libstreamanalyzer"),
-	  NULL },
 	{ "force-module", 'm', 0,
 	  G_OPTION_ARG_STRING, &force_module,
 	  N_("Force a module to be used for extraction (e.g. \"foo\" for \"foo.so\")"),
@@ -160,9 +150,11 @@ initialize_directories (void)
 	g_free (user_data_dir);
 }
 
-static void
-signal_handler (int signo)
+static gboolean
+signal_handler (gpointer user_data)
 {
+	int signo = GPOINTER_TO_INT (user_data);
+
 	static gboolean in_loop = FALSE;
 
 	/* Die if we get re-entrant signals handler calls */
@@ -171,10 +163,6 @@ signal_handler (int signo)
 	}
 
 	switch (signo) {
-	case SIGABRT:
-	case SIGALRM:
-		_exit (EXIT_FAILURE);
-		break;
 	case SIGTERM:
 	case SIGINT:
 		in_loop = TRUE;
@@ -190,25 +178,16 @@ signal_handler (int signo)
 		}
 		break;
 	}
+
+	return G_SOURCE_CONTINUE;
 }
 
 static void
 initialize_signal_handler (void)
 {
 #ifndef G_OS_WIN32
-	struct sigaction act;
-	sigset_t         empty_mask;
-
-	sigemptyset (&empty_mask);
-	act.sa_handler = signal_handler;
-	act.sa_mask    = empty_mask;
-	act.sa_flags   = 0;
-
-	sigaction (SIGTERM, &act, NULL);
-	sigaction (SIGINT,  &act, NULL);
-	sigaction (SIGHUP,  &act, NULL);
-	sigaction (SIGALRM,  &act, NULL);
-	sigaction (SIGABRT, &act, NULL);
+	g_unix_signal_add (SIGTERM, signal_handler, GINT_TO_POINTER (SIGTERM));
+	g_unix_signal_add (SIGINT, signal_handler, GINT_TO_POINTER (SIGINT));
 #endif /* G_OS_WIN32 */
 }
 
@@ -273,10 +252,6 @@ run_standalone (TrackerConfig *config)
 
 	tracker_locale_init ();
 
-	if (!media_art_init ()) {
-		g_warning ("Could not initialize media art, will not be available");
-	}
-
 	/* This makes sure we don't steal all the system's resources */
 	initialize_priority_and_scheduling (tracker_config_get_sched_idle (config),
 	                                    tracker_db_manager_get_first_index_done () == FALSE);
@@ -284,19 +259,14 @@ run_standalone (TrackerConfig *config)
 	file = g_file_new_for_commandline_arg (filename);
 	uri = g_file_get_uri (file);
 
-	object = tracker_extract_new (TRUE,
-	                              force_internal_extractors,
-	                              force_module);
+	object = tracker_extract_new (TRUE, force_module);
 
 	if (!object) {
 		g_object_unref (file);
 		g_free (uri);
-		media_art_shutdown ();
 		tracker_locale_shutdown ();
 		return EXIT_FAILURE;
 	}
-
-	tracker_memory_setrlimits ();
 
 	tracker_extract_get_metadata_by_cmdline (object, uri, mime_type);
 
@@ -304,7 +274,6 @@ run_standalone (TrackerConfig *config)
 	g_object_unref (file);
 	g_free (uri);
 
-	media_art_shutdown ();
 	tracker_locale_shutdown ();
 
 	return EXIT_SUCCESS;
@@ -346,28 +315,12 @@ main (int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	if (force_internal_extractors && force_module) {
-		gchar *help;
-
-		g_printerr ("%s\n\n",
-		            _("Options --force-internal-extractors and --force-module can't be used together"));
-
-		help = g_option_context_get_help (context, TRUE, NULL);
-		g_option_context_free (context);
-		g_printerr ("%s", help);
-		g_free (help);
-
-		return EXIT_FAILURE;
-	}
-
 	g_option_context_free (context);
 
 	if (version) {
 		g_print ("\n" ABOUT "\n" LICENSE "\n");
 		return EXIT_SUCCESS;
 	}
-
-	initialize_signal_handler ();
 
 	g_set_application_name ("tracker-extract");
 
@@ -399,11 +352,8 @@ main (int argc, char *argv[])
 	/* This makes sure we don't steal all the system's resources */
 	initialize_priority_and_scheduling (tracker_config_get_sched_idle (config),
 	                                    tracker_db_manager_get_first_index_done () == FALSE);
-	tracker_memory_setrlimits ();
 
-	extract = tracker_extract_new (TRUE,
-	                               force_internal_extractors,
-	                               force_module);
+	extract = tracker_extract_new (TRUE, force_module);
 
 	if (!extract) {
 		g_object_unref (config);
@@ -427,15 +377,14 @@ main (int argc, char *argv[])
 
 	tracker_locale_init ();
 
-	if (!media_art_init ()) {
-		g_warning ("Could not initialize media art, will not be available");
-	}
-
 	controller = tracker_extract_controller_new (decorator);
 	tracker_miner_start (TRACKER_MINER (decorator));
 
 	/* Main loop */
 	main_loop = g_main_loop_new (NULL, FALSE);
+
+	initialize_signal_handler ();
+
 	g_main_loop_run (main_loop);
 
 	my_main_loop = main_loop;
@@ -445,7 +394,6 @@ main (int argc, char *argv[])
 	tracker_miner_stop (TRACKER_MINER (decorator));
 
 	/* Shutdown subsystems */
-	media_art_shutdown ();
 	tracker_locale_shutdown ();
 
 	g_object_unref (extract);

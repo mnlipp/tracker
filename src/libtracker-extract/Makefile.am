@@ -1,12 +1,10 @@
-include $(top_srcdir)/Makefile.extractdirs
-
 AM_CPPFLAGS =                                          \
 	$(BUILD_CFLAGS)                                \
 	-I$(top_srcdir)/src                            \
 	-I$(top_builddir)/src                          \
 	-DSHAREDIR=\""$(datadir)"\"                    \
-	-DTRACKER_EXTRACTOR_RULES_DIR=\""$(extractrulesdir)"\" \
-	-DTRACKER_EXTRACTORS_DIR=\""$(extractmodulesdir)"\" \
+	-DTRACKER_EXTRACTOR_RULES_DIR=\""$(TRACKER_EXTRACT_RULES_DIR)"\" \
+	-DTRACKER_EXTRACTORS_DIR=\""$(TRACKER_EXTRACT_MODULES_DIR)"\" \
 	$(LIBTRACKER_EXTRACT_CFLAGS)
 
 libtracker_extractdir = $(libdir)/tracker-$(TRACKER_API_VERSION)
@@ -25,8 +23,6 @@ libtracker_extract_la_SOURCES =  \
 	tracker-exif.c                                 \
 	tracker-exif.h                                 \
 	tracker-extract.h                              \
-	tracker-extract-client.c                       \
-	tracker-extract-client.h                       \
 	tracker-extract-info.c                         \
 	tracker-extract-info.h                         \
 	tracker-guarantee.c                            \
@@ -44,7 +40,6 @@ noinst_HEADERS =                                       \
 	tracker-data.h                                 \
 	tracker-encoding.h                             \
 	tracker-exif.h                                 \
-	tracker-extract-client.h                       \
 	tracker-extract-info.h                         \
 	tracker-extract.h                              \
 	tracker-guarantee.h                            \
@@ -65,7 +60,7 @@ libtracker_extract_la_SOURCES += \
 	tracker-encoding-meegotouch.h
 endif
 
-if HAVE_LIBICU
+if HAVE_LIBICU_CHARSET_DETECTION
 libtracker_extract_la_SOURCES += \
 	tracker-encoding-libicu.c                      \
 	tracker-encoding-libicu.h
@@ -74,7 +69,3 @@ AM_CPPFLAGS +=                                         \
 libtracker_extract_la_LIBADD +=  \
 	$(LIBICU_LIBS)
 endif
-
-libtracker_extract_la_LDFLAGS =  \
-	-version-info $(LT_CURRENT):$(LT_REVISION):$(LT_AGE)
-

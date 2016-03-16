@@ -30,6 +30,7 @@
 
 G_BEGIN_DECLS
 
+#define TRACKER_EXTRACT_ERROR          (tracker_extract_error_quark ())
 #define TRACKER_TYPE_EXTRACT           (tracker_extract_get_type ())
 #define TRACKER_EXTRACT(object)        (G_TYPE_CHECK_INSTANCE_CAST ((object), TRACKER_TYPE_EXTRACT, TrackerExtract))
 #define TRACKER_EXTRACT_CLASS(klass)   (G_TYPE_CHECK_CLASS_CAST ((klass), TRACKER_TYPE_EXTRACT, TrackerExtractClass))
@@ -40,6 +41,11 @@ G_BEGIN_DECLS
 typedef struct TrackerExtract      TrackerExtract;
 typedef struct TrackerExtractClass TrackerExtractClass;
 
+typedef enum {
+	TRACKER_EXTRACT_ERROR_NO_MIMETYPE,
+	TRACKER_EXTRACT_ERROR_NO_EXTRACTOR
+} TrackerExtractError;
+
 struct TrackerExtract {
 	GObject parent;
 };
@@ -48,18 +54,28 @@ struct TrackerExtractClass {
 	GObjectClass parent;
 };
 
+GQuark          tracker_extract_error_quark             (void);
 GType           tracker_extract_get_type                (void);
 TrackerExtract *tracker_extract_new                     (gboolean                disable_shutdown,
-                                                         gboolean                force_internal_extractors,
                                                          const gchar            *force_module);
 
 void            tracker_extract_file                    (TrackerExtract         *extract,
                                                          const gchar            *file,
                                                          const gchar            *mimetype,
                                                          const gchar            *graph,
+                                                         const gchar            *urn,
                                                          GCancellable           *cancellable,
                                                          GAsyncReadyCallback     cb,
                                                          gpointer                user_data);
+TrackerExtractInfo *
+                tracker_extract_file_finish             (TrackerExtract         *extract,
+                                                         GAsyncResult           *res,
+                                                         GError                **error);
+
+#ifdef HAVE_LIBMEDIAART
+MediaArtProcess *
+                tracker_extract_get_media_art_process   (TrackerExtract         *extract);
+#endif
 
 void            tracker_extract_dbus_start              (TrackerExtract         *extract);
 void            tracker_extract_dbus_stop               (TrackerExtract         *extract);

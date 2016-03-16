@@ -30,14 +30,14 @@
 #include "tracker-encoding-meegotouch.h"
 #endif
 
-#ifdef HAVE_LIBICU
+#ifdef HAVE_LIBICU_CHARSET_DETECTION
 #include "tracker-encoding-libicu.h"
 #endif
 
 gboolean
 tracker_encoding_can_guess (void)
 {
-#if defined (HAVE_ENCA) || defined (HAVE_MEEGOTOUCH) || defined (HAVE_LIBICU)
+#if defined (HAVE_ENCA) || defined (HAVE_MEEGOTOUCH) || defined (HAVE_LIBICU_CHARSET_DETECTION)
 	return TRUE;
 #else
 	return FALSE;
@@ -46,24 +46,31 @@ tracker_encoding_can_guess (void)
 
 gchar *
 tracker_encoding_guess (const gchar *buffer,
-                        gsize        size)
+                        gsize        size,
+                        gdouble     *confidence)
 {
 	gchar *encoding = NULL;
+	gdouble conf = 1;
 
 #ifdef HAVE_MEEGOTOUCH
 	encoding = tracker_encoding_guess_meegotouch (buffer, size);
 #endif /* HAVE_MEEGOTOUCH */
 
-#ifdef HAVE_LIBICU
+#ifdef HAVE_LIBICU_CHARSET_DETECTION
 	if (!encoding)
-		encoding = tracker_encoding_guess_icu (buffer, size);
-#endif
+		encoding = tracker_encoding_guess_icu (buffer, size, &conf);
+#endif /* HAVE_LIBICU_CHARSET_DETECTION */
 
 #ifdef HAVE_ENCA
-	if (!encoding)
+	if (!encoding || conf < 0.5) {
+		conf = 1;
+		g_free (encoding);
 		encoding = tracker_encoding_guess_enca (buffer, size);
+	}
 #endif /* HAVE_ENCA */
 
+	if (confidence)
+		*confidence = conf;
 
 	return encoding;
 }

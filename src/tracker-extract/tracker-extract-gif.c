@@ -20,10 +20,6 @@
 
 #include "config.h"
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -84,15 +80,35 @@ gif_error (const gchar *action, int err)
 		g_message ("%s, undefined error %d", action, err);
 	}
 }
+#else /* GIFLIB_MAJOR >= 5 */
+static inline void print_gif_error()
+{
+#if defined(GIFLIB_MAJOR) && defined(GIFLIB_MINOR) && ((GIFLIB_MAJOR == 4 && GIFLIB_MINOR >= 2) || GIFLIB_MAJOR > 4)
+	const char *str = GifErrorString ();
+	if (str != NULL) {
+		g_message ("GIF, error: '%s'", str);
+	} else {
+		g_message ("GIF, undefined error");
+	}
+#else
+	PrintGifError();
+#endif
+}
 #endif /* GIFLIB_MAJOR >= 5 */
+
+/* giflib 5.1 changed the API of DGifCloseFile to take two arguments */
+#if !defined(GIFLIB_MAJOR) || \
+    !(GIFLIB_MAJOR > 5 || (GIFLIB_MAJOR == 5 && GIFLIB_MINOR >= 1))
+#define DGifCloseFile(a, b) DGifCloseFile(a)
+#endif
 
 static void
 read_metadata (TrackerSparqlBuilder *preupdate,
                TrackerSparqlBuilder *metadata,
-               GString              *where,
                GifFileType          *gifFile,
                const gchar          *uri,
-               const gchar          *graph)
+               const gchar          *graph,
+               const gchar          *urn)
 {
 	GifRecordType RecordType;
 	int frameheight;
@@ -112,7 +128,7 @@ read_metadata (TrackerSparqlBuilder *preupdate,
 
 		if (DGifGetRecordType(gifFile, &RecordType) == GIF_ERROR) {
 #if GIFLIB_MAJOR < 5
-			PrintGifError ();
+			print_gif_error ();
 #else  /* GIFLIB_MAJOR < 5 */
 			gif_error ("Could not read next GIF record type", gifFile->Error);
 #endif /* GIFLIB_MAJOR < 5 */
@@ -123,7 +139,7 @@ read_metadata (TrackerSparqlBuilder *preupdate,
 			case IMAGE_DESC_RECORD_TYPE:
 			if (DGifGetImageDesc(gifFile) == GIF_ERROR) {
 #if GIFLIB_MAJOR < 5
-				PrintGifError();
+				print_gif_error();
 #else  /* GIFLIB_MAJOR < 5 */
 				gif_error ("Could not get GIF record information", gifFile->Error);
 #endif /* GIFLIB_MAJOR < 5 */
@@ -137,7 +153,7 @@ read_metadata (TrackerSparqlBuilder *preupdate,
 
 			if (DGifGetLine(gifFile, framedata, framewidth*frameheight)==GIF_ERROR) {
 #if GIFLIB_MAJOR < 5
-				PrintGifError();
+				print_gif_error();
 #else  /* GIFLIB_MAJOR < 5 */
 				gif_error ("Could not load a block of GIF pixes", gifFile->Error);
 #endif /* GIFLIB_MAJOR < 5 */
@@ -379,7 +395,7 @@ read_metadata (TrackerSparqlBuilder *preupdate,
 		tracker_sparql_builder_object_unvalidated (metadata, xd->metering_mode);
 	}
 
-	keywords = g_ptr_array_new ();
+	keywords = g_ptr_array_new_with_free_func ((GDestroyNotify) g_free);
 
 	if (xd->keywords) {
 		tracker_keywords_parse (keywords, xd->keywords);
@@ -403,31 +419,21 @@ read_metadata (TrackerSparqlBuilder *preupdate,
         }
 
 	for (i = 0; i < keywords->len; i++) {
-		gchar *p, *escaped, *var;
+		gchar *escaped, *subject;
+		const gchar *p;
 
 		p = g_ptr_array_index (keywords, i);
 		escaped = tracker_sparql_escape_string (p);
-		var = g_strdup_printf ("tag%d", i + 1);
+		subject = g_strdup_printf ("_:tag%d", i + 1);
 
 		/* ensure tag with specified label exists */
-		tracker_sparql_builder_append (preupdate, "INSERT { ");
-
-		if (graph) {
-			tracker_sparql_builder_append (preupdate, "GRAPH <");
-			tracker_sparql_builder_append (preupdate, graph);
-			tracker_sparql_builder_append (preupdate, "> { ");
-		}
-
-		tracker_sparql_builder_append (preupdate,
-		                               "_:tag a nao:Tag ; nao:prefLabel \"");
-		tracker_sparql_builder_append (preupdate, escaped);
-		tracker_sparql_builder_append (preupdate, "\"");
-
-		if (graph) {
-			tracker_sparql_builder_append (preupdate, " } ");
-		}
-
-		tracker_sparql_builder_append (preupdate, " }\n");
+		tracker_sparql_builder_insert_open (preupdate, graph);
+		tracker_sparql_builder_subject (preupdate, subject);
+		tracker_sparql_builder_predicate (preupdate, "a");
+		tracker_sparql_builder_object (preupdate, "nao:Tag");
+		tracker_sparql_builder_predicate (preupdate, "nao:prefLabel");
+		tracker_sparql_builder_object_unvalidated (preupdate, escaped);
+		tracker_sparql_builder_insert_close (preupdate);
 		tracker_sparql_builder_append (preupdate,
 		                               "WHERE { FILTER (NOT EXISTS { "
 		                               "?tag a nao:Tag ; nao:prefLabel \"");
@@ -436,14 +442,21 @@ read_metadata (TrackerSparqlBuilder *preupdate,
 		                               "\" }) }\n");
 
 		/* associate file with tag */
-		tracker_sparql_builder_predicate (metadata, "nao:hasTag");
-		tracker_sparql_builder_object_variable (metadata, var);
+		tracker_sparql_builder_insert_open (preupdate, graph);
+		tracker_sparql_builder_subject_iri (preupdate, urn);
+		tracker_sparql_builder_predicate (preupdate, "nao:hasTag");
+		tracker_sparql_builder_object (preupdate, "?tag");
+		tracker_sparql_builder_insert_close (preupdate);
+		tracker_sparql_builder_where_open (preupdate);
+		tracker_sparql_builder_subject (preupdate, "?tag");
+		tracker_sparql_builder_predicate (preupdate, "a");
+		tracker_sparql_builder_object (preupdate, "nao:Tag");
+		tracker_sparql_builder_predicate (preupdate, "nao:prefLabel");
+		tracker_sparql_builder_object_unvalidated (preupdate, escaped);
+		tracker_sparql_builder_where_close (preupdate);
 
-		g_string_append_printf (where, "?%s a nao:Tag ; nao:prefLabel \"%s\" .\n", var, escaped);
-
-		g_free (var);
+		g_free (subject);
 		g_free (escaped);
-		g_free (p);
 	}
 	g_ptr_array_free (keywords, TRUE);
 
@@ -611,8 +624,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	TrackerSparqlBuilder *preupdate, *metadata;
 	goffset size;
 	GifFileType *gifFile = NULL;
-	GString *where;
-	const gchar *graph;
+	const gchar *graph, *urn;
 	gchar *filename, *uri;
 	GFile *file;
 	int fd;
@@ -623,6 +635,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	preupdate = tracker_extract_info_get_preupdate_builder (info);
 	metadata = tracker_extract_info_get_metadata_builder (info);
 	graph = tracker_extract_info_get_graph (info);
+	urn = tracker_extract_info_get_urn (info);
 
 	file = tracker_extract_info_get_file (info);
 	filename = g_file_get_path (file);
@@ -645,7 +658,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 
 #if GIFLIB_MAJOR < 5
 	if ((gifFile = DGifOpenFileHandle (fd)) == NULL) {
-		PrintGifError ();
+		print_gif_error ();
 #else   /* GIFLIB_MAJOR < 5 */
 	if ((gifFile = DGifOpenFileHandle (fd, &err)) == NULL) {
 		gif_error ("Could not open GIF file with handle", err);
@@ -661,18 +674,15 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	tracker_sparql_builder_object (metadata, "nfo:Image");
 	tracker_sparql_builder_object (metadata, "nmm:Photo");
 
-	where = g_string_new ("");
 	uri = g_file_get_uri (file);
 
-	read_metadata (preupdate, metadata, where, gifFile, uri, graph);
-	tracker_extract_info_set_where_clause (info, where->str);
-	g_string_free (where, TRUE);
+	read_metadata (preupdate, metadata, gifFile, uri, graph, urn);
 
 	g_free (uri);
 
-	if (DGifCloseFile (gifFile) != GIF_OK) {
+	if (DGifCloseFile (gifFile, NULL) != GIF_OK) {
 #if GIFLIB_MAJOR < 5
-		PrintGifError ();
+		print_gif_error ();
 #else  /* GIFLIB_MAJOR < 5 */
 		gif_error ("Could not close GIF file", gifFile->Error);
 #endif /* GIFLIB_MAJOR < 5 */

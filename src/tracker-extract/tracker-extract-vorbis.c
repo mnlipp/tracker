@@ -28,7 +28,9 @@
 
 #include <vorbis/vorbisfile.h>
 
+#ifdef HAVE_LIBMEDIAART
 #include <libmediaart/mediaart.h>
+#endif
 
 #include <libtracker-common/tracker-common.h>
 
@@ -95,7 +97,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 	VorbisData vd = { 0 };
 	MergeData md = { 0 };
 	FILE *f;
-	gchar *filename, *uri;
+	gchar *filename;
 	OggVorbis_File vf;
 	vorbis_comment *comment;
 	vorbis_info *vi;
@@ -136,6 +138,8 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		vd.track_count = ogg_get_comment (comment, "trackcount");
 		vd.track_number = ogg_get_comment (comment, "tracknumber");
 		vd.disc_number = ogg_get_comment (comment, "DiscNo");
+                if (vd.disc_number == NULL)
+                        vd.disc_number = ogg_get_comment (comment, "DiscNumber");
 		vd.performer = ogg_get_comment (comment, "Performer");
 		vd.track_gain = ogg_get_comment (comment, "TrackGain");
 		vd.track_peak_gain = ogg_get_comment (comment, "TrackPeakGain");
@@ -511,15 +515,35 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		tracker_sparql_builder_object_int64 (metadata, (gint64) time);
 	}
 
-	uri = g_file_get_uri (file);
-	media_art_process (NULL,
-	                   0,
-	                   NULL,
-	                   MEDIA_ART_ALBUM,
-	                   vd.album_artist ? vd.album_artist : vd.artist,
-	                   vd.album,
-	                   uri);
-	g_free (uri);
+#ifdef HAVE_LIBMEDIAART
+	if ((vd.album_artist || vd.artist) || vd.album) {
+		MediaArtProcess *media_art_process;
+		GError *error = NULL;
+		gboolean success;
+
+		media_art_process = tracker_extract_info_get_media_art_process (info);
+
+		success = media_art_process_file (media_art_process,
+		                                  MEDIA_ART_ALBUM,
+		                                  MEDIA_ART_PROCESS_FLAGS_NONE,
+		                                  file,
+		                                  vd.album_artist ? vd.album_artist : vd.artist,
+		                                  vd.album,
+		                                  NULL,
+		                                  &error);
+
+		if (!success || error) {
+			gchar *uri;
+
+			uri = g_file_get_uri (file);
+			g_warning ("Could not process media art for '%s', %s",
+			           uri,
+			           error ? error->message : "No error given");
+			g_free (uri);
+			g_clear_error (&error);
+		}
+	}
+#endif
 
 	g_free (vd.artist);
 	g_free (vd.album);

@@ -1,6 +1,6 @@
 include $(top_srcdir)/Makefile.decl
 
-SUBDIRS = data src docs po utils examples
+SUBDIRS = src docs po utils examples
 
 if HAVE_UNIT_TESTS
 SUBDIRS += tests
@@ -56,16 +56,24 @@ coverage-report: coverage
 	genhtml --title "@PACKAGE_STRING@" --output-directory $(top_builddir)/coverage $(top_builddir)/lcov.info
 #endif
 
-dist-hook: gen-ChangeLog
+distclean-local:
+	if test "x$(srcdir)" = "x."; then :; else \
+		rm -f ChangeLog; \
+	fi
 
+.PHONY: ChangeLog
 gen_start_date = 2009-04-10
-.PHONY: gen-ChangeLog
-gen-ChangeLog:
-	if test -d .git; then                          \
-	  $(top_srcdir)/gitlog-to-changelog            \
-	    --since=$(gen_start_date) > $(distdir)/cl-t; \
-	  rm -f $(distdir)/ChangeLog;                  \
-	  mv $(distdir)/cl-t $(distdir)/ChangeLog;     \
+ChangeLog:
+	$(AM_V_GEN) if test -d "$(srcdir)/.git"; then \
+	  $(top_srcdir)/gitlog-to-changelog --since=$(gen_start_date) > $@.tmp \
+	  && mv -f $@.tmp $@ \
+	  || ($(RM) $@.tmp; \
+	      echo Failed to generate ChangeLog, your ChangeLog may be outdated >&2; \
+	      (test -f $@ || echo git-log is required to generate this file >> $@)); \
+	else \
+	  test -f $@ || \
+	  (echo A git checkout and git-log is required to generate ChangeLog >&2 && \
+	  echo A git checkout and git-log is required to generate this file >> $@); \
 	fi
 
 functional-test:
@@ -73,12 +81,15 @@ functional-test:
 
 EXTRA_DIST +=                                          \
 	ChangeLog.pre-0-6-93                           \
-	Makefile.extractdirs                           \
+	COPYING.GPL                                    \
+	COPYING.LGPL                                   \
 	gitlog-to-changelog                            \
 	intltool-extract.in                            \
 	intltool-merge.in                              \
 	intltool-update.in			       \
-	tracker.doap
+	tracker.doap \
+	tap-driver.sh \
+	tap-test
 
 DISTCLEANFILES +=                                      \
 	intltool-extract                               \
@@ -87,6 +98,7 @@ DISTCLEANFILES +=                                      \
 
 DISTCHECK_CONFIGURE_FLAGS =                            \
 	--with-session-bus-services-dir="\$(datadir)"/dbus-1/services \
+	--with-bash-completion-dir="\$(datadir)"/bash-completion/ \
 	--disable-nautilus-extension                   \
 	--enable-unit-tests                            \
 	--enable-functional-tests                      \
@@ -106,6 +118,6 @@ DISTCHECK_CONFIGURE_FLAGS =                            \
 	--enable-libgsf                                \
 	--enable-playlist                              \
 	--enable-tracker-preferences                   \
-	--with-enca
+	--enable-enca
 
 ACLOCAL_AMFLAGS = -I m4 ${ACLOCAL_FLAGS}

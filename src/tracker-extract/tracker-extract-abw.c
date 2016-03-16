@@ -20,10 +20,6 @@
 
 #include "config.h"
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -54,9 +50,14 @@ struct AbwParserData {
 	TrackerSparqlBuilder *metadata;
 	TrackerSparqlBuilder *preupdate;
 	GString *content;
+	gchar *uri;
 
 	guint cur_tag;
-	guint in_text : 1;
+	guint in_text       : 1;
+	guint has_title     : 1;
+	guint has_subject   : 1;
+	guint has_comment   : 1;
+	guint has_generator : 1;
 };
 
 static void
@@ -103,12 +104,24 @@ abw_parser_text (GMarkupParseContext *context,
 
 	switch (data->cur_tag) {
 	case ABW_PARSER_TAG_TITLE:
-		tracker_sparql_builder_predicate (data->metadata, "nie:title");
-		tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		if (data->has_title) {
+			g_warning ("Avoiding additional title (%s) in Abiword document '%s'",
+			           str, data->uri);
+		} else {
+			data->has_title = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:title");
+			tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		}
 		break;
 	case ABW_PARSER_TAG_SUBJECT:
-		tracker_sparql_builder_predicate (data->metadata, "nie:subject");
-		tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		if (data->has_subject) {
+			g_warning ("Avoiding additional subject (%s) in Abiword document '%s'",
+			           str, data->uri);
+		} else {
+			data->has_subject = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:subject");
+			tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		}
 		break;
 	case ABW_PARSER_TAG_CREATOR:
 		tracker_sparql_builder_predicate (data->metadata, "nco:creator");
@@ -122,12 +135,24 @@ abw_parser_text (GMarkupParseContext *context,
 		tracker_sparql_builder_object_blank_close (data->metadata);
 		break;
 	case ABW_PARSER_TAG_DESCRIPTION:
-		tracker_sparql_builder_predicate (data->metadata, "nie:comment");
-		tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		if (data->has_comment) {
+			g_warning ("Avoiding additional comment (%s) in Abiword document '%s'",
+			           str, data->uri);
+		} else {
+			data->has_comment = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:comment");
+			tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		}
 		break;
 	case ABW_PARSER_TAG_GENERATOR:
-		tracker_sparql_builder_predicate (data->metadata, "nie:generator");
-		tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		if (data->has_generator) {
+			g_warning ("Avoiding additional generator (%s) in Abiword document '%s'",
+			           str, data->uri);
+		} else {
+			data->has_generator = TRUE;
+			tracker_sparql_builder_predicate (data->metadata, "nie:generator");
+			tracker_sparql_builder_object_unvalidated (data->metadata, str);
+		}
 		break;
 	case ABW_PARSER_TAG_KEYWORDS:
 	{
@@ -222,6 +247,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		GMarkupParseContext *context;
 		AbwParserData data = { 0 };
 
+		data.uri = g_file_get_uri (f);
 		data.metadata = metadata;
 		data.preupdate = preupdate;
 
@@ -245,6 +271,7 @@ tracker_extract_get_metadata (TrackerExtractInfo *info)
 		}
 
 		g_markup_parse_context_free (context);
+		g_free (data.uri);
 	}
 
 

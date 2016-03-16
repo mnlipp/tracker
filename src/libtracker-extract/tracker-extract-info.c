@@ -19,6 +19,8 @@
  * Author: Carlos Garnacho <carlos@lanedo.com>
  */
 
+#include "config.h"
+
 #include "tracker-extract-info.h"
 
 /**
@@ -45,6 +47,11 @@ struct _TrackerExtractInfo
 	GFile *file;
 	gchar *mimetype;
 	gchar *graph;
+	gchar *urn;
+
+#ifdef HAVE_LIBMEDIAART
+	MediaArtProcess *media_art_process;
+#endif
 
 	gint ref_count;
 };
@@ -67,7 +74,8 @@ G_DEFINE_BOXED_TYPE (TrackerExtractInfo, tracker_extract_info,
 TrackerExtractInfo *
 tracker_extract_info_new (GFile       *file,
                           const gchar *mimetype,
-                          const gchar *graph)
+                          const gchar *graph,
+                          const gchar *urn)
 {
 	TrackerExtractInfo *info;
 
@@ -77,12 +85,17 @@ tracker_extract_info_new (GFile       *file,
 	info->file = g_object_ref (file);
 	info->mimetype = g_strdup (mimetype);
 	info->graph = g_strdup (graph);
+	info->urn = g_strdup (urn);
 
 	info->preupdate = tracker_sparql_builder_new_update ();
 	info->postupdate = tracker_sparql_builder_new_update ();
 	info->metadata = tracker_sparql_builder_new_embedded_insert ();
 
         info->where_clause = NULL;
+
+#ifdef HAVE_LIBMEDIAART
+        info->media_art_process = NULL;
+#endif
 
 	info->ref_count = 1;
 
@@ -127,11 +140,17 @@ tracker_extract_info_unref (TrackerExtractInfo *info)
 		g_object_unref (info->file);
 		g_free (info->mimetype);
 		g_free (info->graph);
+		g_free (info->urn);
 
 		g_object_unref (info->preupdate);
 		g_object_unref (info->postupdate);
 		g_object_unref (info->metadata);
 		g_free (info->where_clause);
+
+#ifdef HAVE_LIBMEDIAART
+		if (info->media_art_process)
+			g_object_unref (info->media_art_process);
+#endif
 
 		g_slice_free (TrackerExtractInfo, info);
 	}
@@ -294,3 +313,57 @@ tracker_extract_info_set_where_clause (TrackerExtractInfo *info,
 	g_free (info->where_clause);
 	info->where_clause = g_strdup (where);
 }
+
+const gchar *
+tracker_extract_info_get_urn (TrackerExtractInfo *info)
+{
+	g_return_val_if_fail (info != NULL, NULL);
+
+	return info->urn;
+}
+
+#ifdef HAVE_LIBMEDIAART
+
+/**
+ * tracker_extract_info_get_media_art_process:
+ * @info: a #TrackerExtractInfo
+ *
+ * Returns the #MediaArtProcess object that can be used to retrieve
+ * and store media art caches found in extracted content.
+ *
+ * Returns: (transfer none): The #MediaArtProcess. This object should
+ * not be unreferenced.
+ *
+ * Since: 1.2
+ **/
+MediaArtProcess *
+tracker_extract_info_get_media_art_process (TrackerExtractInfo *info)
+{
+	g_return_val_if_fail (info != NULL, NULL);
+	return info->media_art_process;
+}
+
+/**
+ * tracker_extract_info_set_media_art_process:
+ * @info: a #TrackerExtractInfo
+ * @media_art_process: a #MediaArtProcess.
+ *
+ * Use @media_art_process for caching and looking up media art.
+ *
+ * Since: 1.2
+ **/
+void
+tracker_extract_info_set_media_art_process (TrackerExtractInfo *info,
+                                            MediaArtProcess    *media_art_process)
+{
+	g_return_if_fail (info != NULL);
+	g_return_if_fail (MEDIA_ART_IS_PROCESS (media_art_process));
+
+	if (info->media_art_process) {
+		g_object_unref (info->media_art_process);
+	}
+
+	info->media_art_process = g_object_ref (media_art_process);
+}
+
+#endif /* HAVE_LIBMEDIAART */
